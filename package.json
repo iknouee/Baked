@@ -1,0 +1,15 @@
+{
+  "name": "bing-bong-discord-bot",
+  "version": "1.0.0",
+  "description": "Starter Discord bot with a /bing command that replies with bong.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3"
+  }
+}

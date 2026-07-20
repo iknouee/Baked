@@ -810,6 +810,111 @@ function helpEmbed(){
 }
 
 // ======================================================
+// SMASH OR PASS HELPERS
+// ======================================================
+
+const smashOrPassPolls = new Map();
+
+function formatVoteList(userIds) {
+  if (userIds.length === 0) return '*Nobody voted.*';
+  return userIds.map((id) => `<@${id}>`).join('\n').slice(0, 1024);
+}
+
+function createSmashOrPassEmbed({ target, starter, endsAt, smashVotes, passVotes, ended = false }) {
+  const smashCount = smashVotes.size;
+  const passCount = passVotes.size;
+  const total = smashCount + passCount;
+  const result = smashCount === passCount
+    ? 'It is a tie.'
+    : smashCount > passCount
+      ? 'The server chose **SMASH**.'
+      : 'The server chose **PASS**.';
+
+  const embed = new EmbedBuilder()
+    .setColor(ended ? (smashCount >= passCount ? 0xff4f9a : 0x5865f2) : 0xf08a24)
+    .setAuthor({
+      name: ended ? 'BKD • SMASH OR PASS RESULTS' : 'BKD • SMASH OR PASS',
+      iconURL: starter.displayAvatarURL({ extension: 'png', size: 128 }),
+    })
+    .setTitle(ended ? `Voting ended for ${target.username}` : `Smash or Pass: ${target.username}?`)
+    .setDescription(
+      ended
+        ? `${result}\n\nThe votes are locked.`
+        : [
+            `Vote on ${target} using the buttons below.`,
+            '',
+            `⏳ **Ends:** <t:${Math.floor(endsAt / 1000)}:R>`,
+            `👤 **Started by:** ${starter}`,
+          ].join('\n')
+    )
+    .setThumbnail(target.displayAvatarURL({ extension: 'png', size: 512 }))
+    .addFields(
+      {
+        name: `💖 SMASH • ${smashCount}`,
+        value: ended ? formatVoteList([...smashVotes]) : total ? `${Math.round((smashCount / total) * 100)}% of votes` : 'No votes yet',
+        inline: true,
+      },
+      {
+        name: `🚪 PASS • ${passCount}`,
+        value: ended ? formatVoteList([...passVotes]) : total ? `${Math.round((passCount / total) * 100)}% of votes` : 'No votes yet',
+        inline: true,
+      }
+    )
+    .setFooter({ text: ended ? `${total} total vote${total === 1 ? '' : 's'}` : 'You can change your vote before time runs out.' })
+    .setTimestamp();
+
+  return embed;
+}
+
+function createSmashOrPassButtons(pollId, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`sop:smash:${pollId}`)
+      .setLabel('Smash')
+      .setEmoji('💖')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId(`sop:pass:${pollId}`)
+      .setLabel('Pass')
+      .setEmoji('🚪')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(disabled)
+  );
+}
+
+async function endSmashOrPassPoll(pollId) {
+  const poll = smashOrPassPolls.get(pollId);
+  if (!poll || poll.ended) return;
+
+  poll.ended = true;
+  clearInterval(poll.updateInterval);
+  clearTimeout(poll.endTimeout);
+
+  try {
+    const channel = await client.channels.fetch(poll.channelId);
+    if (!channel?.isTextBased()) return;
+    const message = await channel.messages.fetch(poll.messageId);
+
+    await message.edit({
+      embeds: [createSmashOrPassEmbed({
+        target: poll.target,
+        starter: poll.starter,
+        endsAt: poll.endsAt,
+        smashVotes: poll.smashVotes,
+        passVotes: poll.passVotes,
+        ended: true,
+      })],
+      components: [createSmashOrPassButtons(pollId, true)],
+    });
+  } catch (error) {
+    console.error('Failed to finish Smash or Pass poll:', error);
+  } finally {
+    setTimeout(() => smashOrPassPolls.delete(pollId), 60 * 60 * 1000).unref?.();
+  }
+}
+
+// ======================================================
 // APPLICATION COMMANDS
 // ======================================================
 
@@ -943,6 +1048,25 @@ const commands = [
   new SlashCommandBuilder().setName('buy').setDescription('Buys an item').addStringOption(o=>o.setName('item').setDescription('Item to buy').addChoices(...Object.entries(shopItems).map(([value,item])=>({name:`${item.emoji} ${item.name}`,value}))).setRequired(true)).addIntegerOption(o=>o.setName('quantity').setDescription('Quantity').setMinValue(1).setMaxValue(20)).setDMPermission(false),
   new SlashCommandBuilder().setName('inventory').setDescription('Shows your inventory').addUserOption(o=>o.setName('user').setDescription('User to check')).setDMPermission(false),
   new SlashCommandBuilder().setName('use').setDescription('Uses an inventory item').addStringOption(o=>o.setName('item').setDescription('Item to use').addChoices({name:'💵 Bank Note',value:'bank_note'},{name:'🎁 Loot Box',value:'loot_box'}).setRequired(true)).setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('smashorpass')
+    .setDescription('Starts a timed Smash or Pass vote for a user')
+    .addUserOption((option) =>
+      option
+        .setName('user')
+        .setDescription('The member everyone will vote on')
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('seconds')
+        .setDescription('Voting time in seconds (default: 30)')
+        .setMinValue(10)
+        .setMaxValue(300)
+        .setRequired(false)
+    )
+    .setDMPermission(false),
 
   new ContextMenuCommandBuilder()
     .setName('Make Quote')
@@ -1167,6 +1291,51 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ======================================================
+// SMASH OR PASS BUTTON HANDLER
+// ======================================================
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('sop:')) return;
+
+  const [, choice, pollId] = interaction.customId.split(':');
+  const poll = smashOrPassPolls.get(pollId);
+
+  if (!poll || poll.ended || Date.now() >= poll.endsAt) {
+    await interaction.reply({
+      content: 'This Smash or Pass vote has already ended.',
+      flags: MessageFlags.Ephemeral,
+    }).catch(() => {});
+    return;
+  }
+
+  if (interaction.user.id === poll.target.id) {
+    await interaction.reply({
+      content: 'You cannot vote on yourself.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  poll.smashVotes.delete(interaction.user.id);
+  poll.passVotes.delete(interaction.user.id);
+
+  if (choice === 'smash') poll.smashVotes.add(interaction.user.id);
+  if (choice === 'pass') poll.passVotes.add(interaction.user.id);
+
+  await interaction.update({
+    embeds: [createSmashOrPassEmbed({
+      target: poll.target,
+      starter: poll.starter,
+      endsAt: poll.endsAt,
+      smashVotes: poll.smashVotes,
+      passVotes: poll.passVotes,
+    })],
+    components: [createSmashOrPassButtons(pollId)],
+  });
+});
+
+// ======================================================
 // SLASH COMMAND HANDLER
 // ======================================================
 
@@ -1214,6 +1383,84 @@ client.on('interactionCreate', async (interaction) => {
       if(cmd==='buy'){const id=interaction.options.getString('item',true),qty=interaction.options.getInteger('quantity')||1,it=shopItems[id],cost=it.price*qty;if(cost>account.wallet){await interaction.reply({content:'You do not have enough wallet coins.',flags:MessageFlags.Ephemeral});return;}account.wallet-=cost;addItem(account,id,qty);saveData(data);await interaction.reply({embeds:[economyEmbed('Purchase Complete',`Bought **${qty}× ${it.emoji} ${it.name}** for ${COIN} **${fmt(cost)}**.`)]});return;}
       if(cmd==='inventory'){const target=interaction.options.getUser('user')||user,a=getAccount(data,guild.id,target.id);const items=Object.entries(a.inventory).filter(([,q])=>q>0).map(([id,q])=>`${shopItems[id]?.emoji||'📦'} **${shopItems[id]?.name||id}** ×${q}`).join('\n');saveData(data);await interaction.reply({embeds:[economyEmbed(`${target.username}'s Inventory`,items||'Inventory is empty.') ]});return;}
       if(cmd==='use'){const id=interaction.options.getString('item',true);if(!account.inventory[id]){await interaction.reply({content:'You do not own that item.',flags:MessageFlags.Ephemeral});return;}account.inventory[id]--;let result='';if(id==='bank_note'){const reward=randomInt(500,2200);account.wallet+=reward;account.earned+=reward;result=`The bank note was worth ${COIN} **${fmt(reward)}**.`;}else{const reward=randomInt(1000,5000);account.wallet+=reward;account.earned+=reward;if(Math.random()<.25){const choices=['fishing_rod','pickaxe','axe','lucky_charm'];const bonus=choices[randomInt(0,choices.length-1)];addItem(account,bonus);result=`The box contained ${COIN} **${fmt(reward)}** and **${shopItems[bonus].emoji} ${shopItems[bonus].name}**.`;}else result=`The box contained ${COIN} **${fmt(reward)}**.`;}saveData(data);await interaction.reply({embeds:[economyEmbed('Item Used',result)]});return;}
+    }
+
+    if (interaction.commandName === 'smashorpass') {
+      const target = interaction.options.getUser('user', true);
+      const seconds = interaction.options.getInteger('seconds') || 30;
+
+      if (target.bot) {
+        await interaction.reply({
+          content: 'Choose a real member, not a bot.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (target.id === interaction.user.id) {
+        await interaction.reply({
+          content: 'You cannot start a Smash or Pass vote on yourself.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const pollId = `${interaction.id}-${Date.now()}`;
+      const endsAt = Date.now() + seconds * 1000;
+      const smashVotes = new Set();
+      const passVotes = new Set();
+
+      await interaction.reply({
+        embeds: [createSmashOrPassEmbed({
+          target,
+          starter: interaction.user,
+          endsAt,
+          smashVotes,
+          passVotes,
+        })],
+        components: [createSmashOrPassButtons(pollId)],
+      });
+
+      const message = await interaction.fetchReply();
+      const poll = {
+        id: pollId,
+        messageId: message.id,
+        channelId: interaction.channelId,
+        guildId: interaction.guildId,
+        target,
+        starter: interaction.user,
+        endsAt,
+        smashVotes,
+        passVotes,
+        ended: false,
+        updateInterval: null,
+        endTimeout: null,
+      };
+
+      poll.updateInterval = setInterval(async () => {
+        if (poll.ended || Date.now() >= poll.endsAt) return;
+        try {
+          await message.edit({
+            embeds: [createSmashOrPassEmbed({
+              target: poll.target,
+              starter: poll.starter,
+              endsAt: poll.endsAt,
+              smashVotes: poll.smashVotes,
+              passVotes: poll.passVotes,
+            })],
+            components: [createSmashOrPassButtons(pollId)],
+          });
+        } catch (error) {
+          console.error('Failed to refresh Smash or Pass timer:', error);
+        }
+      }, 5000);
+      poll.updateInterval.unref?.();
+
+      poll.endTimeout = setTimeout(() => endSmashOrPassPoll(pollId), seconds * 1000);
+      poll.endTimeout.unref?.();
+
+      smashOrPassPolls.set(pollId, poll);
+      return;
     }
 
     if (interaction.commandName === 'bakedmembers') {

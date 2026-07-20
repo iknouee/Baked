@@ -750,6 +750,71 @@ function isReplyOnCooldown(guildId, channelId, ruleId) {
 
 
 // ======================================================
+// FEET JOKE HELPERS
+// ======================================================
+
+const feetImageDirectory = path.join(__dirname, 'assets', 'feet');
+const lastFeetImageByGuild = new Map();
+
+const feetCaptions = [
+  'Fresh out the toe factory.',
+  'Put those dogs away 😭',
+  'Certified gripper sighting.',
+  'A completely unnecessary feet drop.',
+  'The socks have officially left the chat.',
+  'WikiFeet scouts are typing…',
+  'Free feet in this economy?',
+  'Caught in 4K with the toes out.',
+  'Premium toe content has arrived.',
+  'The grippers have been deployed.',
+  'Nobody asked, but here we are.',
+  'A historic moment for the server.',
+];
+
+function getFeetImages() {
+  try {
+    if (!fs.existsSync(feetImageDirectory)) return [];
+
+    return fs.readdirSync(feetImageDirectory)
+      .filter((fileName) => /\.(png|jpe?g|webp)$/i.test(fileName))
+      .map((fileName) => path.join(feetImageDirectory, fileName));
+  } catch (error) {
+    console.error('Unable to read feet image directory:', error);
+    return [];
+  }
+}
+
+function chooseRandomFeetImage(guildId) {
+  const images = getFeetImages();
+  if (images.length === 0) return null;
+
+  const previousImage = lastFeetImageByGuild.get(guildId);
+  const availableImages = images.length > 1
+    ? images.filter((imagePath) => imagePath !== previousImage)
+    : images;
+
+  const selectedImage = availableImages[randomInt(0, availableImages.length - 1)];
+  lastFeetImageByGuild.set(guildId, selectedImage);
+  return selectedImage;
+}
+
+function createFeetEmbed(user, attachmentName) {
+  const caption = feetCaptions[randomInt(0, feetCaptions.length - 1)];
+
+  return new EmbedBuilder()
+    .setColor(0xff75b5)
+    .setAuthor({
+      name: 'BKD • FEET FINDER',
+      iconURL: user.displayAvatarURL({ extension: 'png', size: 128 }),
+    })
+    .setTitle('👣 Random Feet Drop')
+    .setDescription(`**${caption}**\n\nRequested by ${user}`)
+    .setImage(`attachment://${attachmentName}`)
+    .setFooter({ text: 'For legal reasons, this is a joke.' })
+    .setTimestamp();
+}
+
+// ======================================================
 // ECONOMY HELPERS
 // ======================================================
 
@@ -922,6 +987,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('bing')
     .setDescription('Replies with bong')
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('feet')
+    .setDescription('Sends a random joke feet picture')
     .setDMPermission(false),
 
   new SlashCommandBuilder()
@@ -1345,6 +1415,32 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
+      return;
+    }
+
+    if (interaction.commandName === 'feet') {
+      await interaction.deferReply();
+
+      const selectedImage = chooseRandomFeetImage(interaction.guildId);
+
+      if (!selectedImage) {
+        await interaction.editReply({
+          content: 'No feet pictures are installed. Add PNG, JPG, or WEBP files to `assets/feet/`.',
+        });
+        return;
+      }
+
+      const extension = path.extname(selectedImage).toLowerCase() || '.png';
+      const attachmentName = `bkd-feet-${Date.now()}${extension}`;
+      const attachment = new AttachmentBuilder(selectedImage, {
+        name: attachmentName,
+        description: 'A random joke feet picture',
+      });
+
+      await interaction.editReply({
+        embeds: [createFeetEmbed(interaction.user, attachmentName)],
+        files: [attachment],
+      });
       return;
     }
 

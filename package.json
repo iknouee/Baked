@@ -1,7 +1,7 @@
 {
   "name": "bing-bong-discord-bot",
   "version": "1.0.0",
-  "description": "Discord bot for BKD with member roster and quote images.",
+  "description": "Discord bot for BKD with members, quotes, and automatic replies.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

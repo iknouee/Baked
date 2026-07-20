@@ -69,6 +69,7 @@ const defaultData = {
   ],
   panels: [],
   replies: [],
+  economy: {},
 };
 
 function cloneDefaultData() {
@@ -76,6 +77,7 @@ function cloneDefaultData() {
     members: [...defaultData.members],
     panels: [],
     replies: [],
+    economy: {},
   };
 }
 
@@ -108,6 +110,10 @@ function loadData() {
 
     if (!Array.isArray(parsedData.replies)) {
       parsedData.replies = [];
+    }
+
+    if (!parsedData.economy || typeof parsedData.economy !== 'object') {
+      parsedData.economy = {};
     }
 
     return parsedData;
@@ -742,6 +748,67 @@ function isReplyOnCooldown(guildId, channelId, ruleId) {
   return false;
 }
 
+
+// ======================================================
+// ECONOMY HELPERS
+// ======================================================
+
+const COIN = '🪙';
+const economyCooldowns = new Map();
+const shopItems = {
+  fishing_rod: { name: 'Fishing Rod', emoji: '🎣', price: 2500, description: 'Improves /fish rewards.' },
+  pickaxe: { name: 'Pickaxe', emoji: '⛏️', price: 3500, description: 'Improves /mine rewards.' },
+  axe: { name: 'Axe', emoji: '🪓', price: 3000, description: 'Improves /chop rewards.' },
+  lucky_charm: { name: 'Lucky Charm', emoji: '🍀', price: 6000, description: 'Small gambling luck bonus.' },
+  bank_note: { name: 'Bank Note', emoji: '💵', price: 1500, description: 'Use it for a random coin reward.' },
+  loot_box: { name: 'Loot Box', emoji: '🎁', price: 4500, description: 'Contains coins or a random item.' },
+};
+
+function economyKey(guildId, userId) { return `${guildId}:${userId}`; }
+function getAccount(data, guildId, userId) {
+  const key = economyKey(guildId, userId);
+  if (!data.economy[key]) {
+    data.economy[key] = {
+      wallet: 500, bank: 0, xp: 0, level: 1, dailyStreak: 0,
+      lastDaily: 0, lastWork: 0, lastBeg: 0, lastFish: 0,
+      lastMine: 0, lastChop: 0, lastRob: 0,
+      wins: 0, losses: 0, earned: 500, lost: 0, inventory: {},
+    };
+  }
+  const a=data.economy[key];
+  a.inventory ||= {};
+  return a;
+}
+function fmt(n) { return Math.max(0, Math.floor(n)).toLocaleString('en-GB'); }
+function randomInt(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
+function cooldownLeft(last, ms){ return Math.max(0, last+ms-Date.now()); }
+function formatWait(ms){ const s=Math.ceil(ms/1000); if(s>=3600)return `${Math.floor(s/3600)}h ${Math.ceil((s%3600)/60)}m`; if(s>=60)return `${Math.floor(s/60)}m ${s%60}s`; return `${s}s`; }
+function addXp(account, amount){
+  account.xp += amount;
+  let levelled=false;
+  while(account.xp >= account.level*250){ account.xp -= account.level*250; account.level++; account.wallet += account.level*100; levelled=true; }
+  return levelled;
+}
+function parseAmount(input, available){
+  const v=String(input).trim().toLowerCase();
+  if(v==='all'||v==='max') return Math.floor(available);
+  if(v==='half') return Math.floor(available/2);
+  const n=Number(v.replace(/,/g,''));
+  return Number.isFinite(n) ? Math.floor(n) : NaN;
+}
+function addItem(account,id,qty=1){ account.inventory[id]=(account.inventory[id]||0)+qty; }
+function hasItem(account,id){ return (account.inventory[id]||0)>0; }
+function economyEmbed(title, description, color=0xf08a24){ return new EmbedBuilder().setColor(color).setTitle(title).setDescription(description).setFooter({text:'BKD Economy • Play responsibly'}); }
+function helpEmbed(){
+ return new EmbedBuilder().setColor(0xf08a24).setAuthor({name:'BKD • ECONOMY'}).setTitle('Economy Command Guide').setDescription('Earn coins, build your inventory and compete for the top spot.').addFields(
+ {name:'💰 Money',value:'`/balance` `/profile` `/daily` `/work` `/beg`\n`/pay` `/deposit` `/withdraw`',inline:false},
+ {name:'🧰 Activities',value:'`/fish` `/mine` `/chop` `/rob`',inline:false},
+ {name:'🎰 Gambling',value:'`/coinflip` `/dice` `/slots` `/blackjack`',inline:false},
+ {name:'🛍️ Items',value:'`/shop` `/buy` `/inventory` `/use`',inline:false},
+ {name:'🏆 Rankings',value:'`/leaderboard`',inline:false}
+ ).setFooter({text:'Amounts accept numbers, half, or all'});
+}
+
 // ======================================================
 // APPLICATION COMMANDS
 // ======================================================
@@ -851,6 +918,31 @@ const commands = [
     .setDescription('Shows all automatic reply triggers')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false),
+
+
+  new SlashCommandBuilder().setName('help').setDescription('Shows the BKD economy command guide').setDMPermission(false),
+  new SlashCommandBuilder().setName('economy').setDescription('Shows the BKD economy command guide').setDMPermission(false),
+  new SlashCommandBuilder().setName('balance').setDescription('Shows a user balance').addUserOption(o=>o.setName('user').setDescription('User to check')).setDMPermission(false),
+  new SlashCommandBuilder().setName('profile').setDescription('Shows economy stats').addUserOption(o=>o.setName('user').setDescription('User to check')).setDMPermission(false),
+  new SlashCommandBuilder().setName('daily').setDescription('Claims your daily coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('work').setDescription('Works for some coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('beg').setDescription('Begs for a few coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('fish').setDescription('Goes fishing for coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('mine').setDescription('Mines for coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('chop').setDescription('Chops wood for coins').setDMPermission(false),
+  new SlashCommandBuilder().setName('pay').setDescription('Pays another member').addUserOption(o=>o.setName('user').setDescription('Member to pay').setRequired(true)).addStringOption(o=>o.setName('amount').setDescription('Amount, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('deposit').setDescription('Deposits wallet coins into your bank').addStringOption(o=>o.setName('amount').setDescription('Amount, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('withdraw').setDescription('Withdraws coins from your bank').addStringOption(o=>o.setName('amount').setDescription('Amount, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Shows the richest members').setDMPermission(false),
+  new SlashCommandBuilder().setName('rob').setDescription('Attempts to rob another member').addUserOption(o=>o.setName('user').setDescription('Member to rob').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('coinflip').setDescription('Bets on a coin flip').addStringOption(o=>o.setName('side').setDescription('Heads or tails').addChoices({name:'Heads',value:'heads'},{name:'Tails',value:'tails'}).setRequired(true)).addStringOption(o=>o.setName('bet').setDescription('Bet, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('dice').setDescription('Rolls against the dealer').addStringOption(o=>o.setName('bet').setDescription('Bet, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('slots').setDescription('Spins the slot machine').addStringOption(o=>o.setName('bet').setDescription('Bet, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('blackjack').setDescription('Plays a quick blackjack hand').addStringOption(o=>o.setName('bet').setDescription('Bet, half, or all').setRequired(true)).setDMPermission(false),
+  new SlashCommandBuilder().setName('shop').setDescription('Shows the economy shop').setDMPermission(false),
+  new SlashCommandBuilder().setName('buy').setDescription('Buys an item').addStringOption(o=>o.setName('item').setDescription('Item to buy').addChoices(...Object.entries(shopItems).map(([value,item])=>({name:`${item.emoji} ${item.name}`,value}))).setRequired(true)).addIntegerOption(o=>o.setName('quantity').setDescription('Quantity').setMinValue(1).setMaxValue(20)).setDMPermission(false),
+  new SlashCommandBuilder().setName('inventory').setDescription('Shows your inventory').addUserOption(o=>o.setName('user').setDescription('User to check')).setDMPermission(false),
+  new SlashCommandBuilder().setName('use').setDescription('Uses an inventory item').addStringOption(o=>o.setName('item').setDescription('Item to use').addChoices({name:'💵 Bank Note',value:'bank_note'},{name:'🎁 Loot Box',value:'loot_box'}).setRequired(true)).setDMPermission(false),
 
   new ContextMenuCommandBuilder()
     .setName('Make Quote')
@@ -1085,6 +1177,43 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
       return;
+    }
+
+
+    if (['help', 'economy'].includes(interaction.commandName)) {
+      await interaction.reply({ embeds: [helpEmbed()] }); return;
+    }
+
+    if (['balance','profile','daily','work','beg','fish','mine','chop','pay','deposit','withdraw','leaderboard','rob','coinflip','dice','slots','blackjack','shop','buy','inventory','use'].includes(interaction.commandName)) {
+      const data=loadData(); const guild=interaction.guild; const user=interaction.user; const account=getAccount(data,guild.id,user.id);
+      const cmd=interaction.commandName;
+      if(cmd==='balance'||cmd==='profile'){
+        const target=interaction.options.getUser('user')||user; const a=getAccount(data,guild.id,target.id); saveData(data);
+        if(cmd==='balance') await interaction.reply({embeds:[economyEmbed(`${target.username}'s Balance`,`${COIN} **Wallet:** ${fmt(a.wallet)}\n🏦 **Bank:** ${fmt(a.bank)}\n💰 **Total:** ${fmt(a.wallet+a.bank)}`)]});
+        else await interaction.reply({embeds:[economyEmbed(`${target.username}'s Profile`,`${COIN} **Total:** ${fmt(a.wallet+a.bank)}\n⭐ **Level:** ${a.level} (${fmt(a.xp)}/${fmt(a.level*250)} XP)\n🔥 **Daily streak:** ${a.dailyStreak}\n🎲 **Gambling:** ${a.wins} wins • ${a.losses} losses\n📈 **Lifetime earned:** ${fmt(a.earned)}`)]});
+        return;
+      }
+      if(cmd==='daily'){
+        const left=cooldownLeft(account.lastDaily,86400000); if(left){await interaction.reply({content:`Your daily is ready in **${formatWait(left)}**.`,flags:MessageFlags.Ephemeral});return;}
+        const previous=account.lastDaily; account.dailyStreak=(previous&&Date.now()-previous<172800000)?account.dailyStreak+1:1; const reward=750+Math.min(account.dailyStreak,14)*75; account.wallet+=reward;account.earned+=reward;account.lastDaily=Date.now();addXp(account,35);saveData(data);
+        await interaction.reply({embeds:[economyEmbed('Daily Reward',`You collected ${COIN} **${fmt(reward)}**.\n🔥 Streak: **${account.dailyStreak} days**`)]});return;
+      }
+      const activity={work:[450,900,3600000,'worked a shift','lastWork'],beg:[40,180,300000,'asked around','lastBeg'],fish:[120,500,600000,'went fishing','lastFish'],mine:[160,650,720000,'went mining','lastMine'],chop:[140,560,600000,'chopped wood','lastChop']};
+      if(activity[cmd]){let [mn,mx,cd,text,key]=activity[cmd];const left=cooldownLeft(account[key],cd);if(left){await interaction.reply({content:`Try again in **${formatWait(left)}**.`,flags:MessageFlags.Ephemeral});return;} if(cmd==='fish'&&hasItem(account,'fishing_rod'))mx+=200;if(cmd==='mine'&&hasItem(account,'pickaxe'))mx+=250;if(cmd==='chop'&&hasItem(account,'axe'))mx+=220;const reward=randomInt(mn,mx);account.wallet+=reward;account.earned+=reward;account[key]=Date.now();addXp(account,randomInt(12,28));saveData(data);await interaction.reply({embeds:[economyEmbed(cmd[0].toUpperCase()+cmd.slice(1),`You ${text} and earned ${COIN} **${fmt(reward)}**.`)]});return;}
+      if(cmd==='pay'){const target=interaction.options.getUser('user',true);if(target.bot||target.id===user.id){await interaction.reply({content:'Choose another real member.',flags:MessageFlags.Ephemeral});return;}const amount=parseAmount(interaction.options.getString('amount',true),account.wallet);if(!Number.isFinite(amount)||amount<1||amount>account.wallet){await interaction.reply({content:'That is not a valid amount.',flags:MessageFlags.Ephemeral});return;}const ta=getAccount(data,guild.id,target.id);account.wallet-=amount;ta.wallet+=amount;saveData(data);await interaction.reply({embeds:[economyEmbed('Payment Sent',`You paid ${target} ${COIN} **${fmt(amount)}**.`)]});return;}
+      if(cmd==='deposit'||cmd==='withdraw'){const source=cmd==='deposit'?'wallet':'bank';const dest=cmd==='deposit'?'bank':'wallet';const amount=parseAmount(interaction.options.getString('amount',true),account[source]);if(!Number.isFinite(amount)||amount<1||amount>account[source]){await interaction.reply({content:'That is not a valid amount.',flags:MessageFlags.Ephemeral});return;}account[source]-=amount;account[dest]+=amount;saveData(data);await interaction.reply({embeds:[economyEmbed(cmd==='deposit'?'Deposit Complete':'Withdrawal Complete',`${COIN} **${fmt(amount)}** moved ${cmd==='deposit'?'into':'out of'} your bank.`)]});return;}
+      if(cmd==='leaderboard'){const entries=Object.entries(data.economy).filter(([k])=>k.startsWith(`${guild.id}:`)).map(([k,a])=>({id:k.split(':')[1],total:(a.wallet||0)+(a.bank||0)})).sort((a,b)=>b.total-a.total).slice(0,10);const lines=await Promise.all(entries.map(async(e,i)=>{const m=await guild.members.fetch(e.id).catch(()=>null);return `**${i+1}.** ${m?m.user.username:'Unknown'} — ${COIN} ${fmt(e.total)}`}));await interaction.reply({embeds:[economyEmbed('Richest Members',lines.join('\n')||'Nobody has started yet.') ]});return;}
+      if(cmd==='rob'){const target=interaction.options.getUser('user',true);if(target.bot||target.id===user.id){await interaction.reply({content:'Choose another real member.',flags:MessageFlags.Ephemeral});return;}const left=cooldownLeft(account.lastRob,3600000);if(left){await interaction.reply({content:`You can rob again in **${formatWait(left)}**.`,flags:MessageFlags.Ephemeral});return;}const ta=getAccount(data,guild.id,target.id);if(ta.wallet<250){await interaction.reply({content:'That member does not have enough wallet coins to rob.',flags:MessageFlags.Ephemeral});return;}account.lastRob=Date.now();if(Math.random()<0.42){const amount=randomInt(100,Math.min(900,Math.floor(ta.wallet*.25)));ta.wallet-=amount;account.wallet+=amount;account.earned+=amount;saveData(data);await interaction.reply({embeds:[economyEmbed('Robbery Successful',`You stole ${COIN} **${fmt(amount)}** from ${target}.`,0x57f287)]});}else{const fine=Math.min(account.wallet,randomInt(75,350));account.wallet-=fine;account.lost+=fine;saveData(data);await interaction.reply({embeds:[economyEmbed('Robbery Failed',`You got caught and paid ${COIN} **${fmt(fine)}**.`,0xed4245)]});}return;}
+      if(['coinflip','dice','slots','blackjack'].includes(cmd)){const amount=parseAmount(interaction.options.getString('bet',true),account.wallet);if(!Number.isFinite(amount)||amount<10||amount>account.wallet){await interaction.reply({content:'Bet at least 10 coins and no more than your wallet.',flags:MessageFlags.Ephemeral});return;}account.wallet-=amount;let won=false,payout=0,text='';
+        if(cmd==='coinflip'){const pick=interaction.options.getString('side',true),result=Math.random()<.5?'heads':'tails';won=pick===result;payout=won?amount*2:0;text=`The coin landed on **${result}**.`;}
+        if(cmd==='dice'){const you=randomInt(1,6),dealer=randomInt(1,6);won=you>dealer;payout=won?amount*2:you===dealer?amount:0;text=`You rolled **${you}** • Dealer rolled **${dealer}**.`;}
+        if(cmd==='slots'){const sy=['🍒','🍋','🍇','🔔','💎'];const r=[sy[randomInt(0,4)],sy[randomInt(0,4)],sy[randomInt(0,4)]];if(r[0]===r[1]&&r[1]===r[2]){won=true;payout=amount*(r[0]==='💎'?8:5);}else if(r[0]===r[1]||r[1]===r[2]||r[0]===r[2]){won=true;payout=Math.floor(amount*1.5);}text=`╔═════════╗\n║ ${r.join(' │ ')} ║\n╚═════════╝`;}
+        if(cmd==='blackjack'){const draw=()=>randomInt(2,11);const you=draw()+draw(),dealer=draw()+draw();won=(you<=21&&(dealer>21||you>dealer));payout=you===dealer?amount:won?(you===21?Math.floor(amount*2.5):amount*2):0;text=`Your hand: **${you}**\nDealer: **${dealer}**`;}
+        account.wallet+=payout;if(payout>amount){account.wins++;account.earned+=payout-amount;}else if(payout===0){account.losses++;account.lost+=amount;}saveData(data);await interaction.reply({embeds:[economyEmbed(cmd[0].toUpperCase()+cmd.slice(1),`${text}\n\n${payout>amount?`You won ${COIN} **${fmt(payout-amount)}**!`:payout===amount?'**Push — your bet was returned.**':`You lost ${COIN} **${fmt(amount)}**.`}`,payout>amount?0x57f287:payout===amount?0xf1c40f:0xed4245)]});return;}
+      if(cmd==='shop'){const lines=Object.entries(shopItems).map(([id,it])=>`${it.emoji} **${it.name}** — ${COIN} ${fmt(it.price)}\n${it.description}\nID: \`${id}\``).join('\n\n');await interaction.reply({embeds:[economyEmbed('BKD Shop',lines)]});return;}
+      if(cmd==='buy'){const id=interaction.options.getString('item',true),qty=interaction.options.getInteger('quantity')||1,it=shopItems[id],cost=it.price*qty;if(cost>account.wallet){await interaction.reply({content:'You do not have enough wallet coins.',flags:MessageFlags.Ephemeral});return;}account.wallet-=cost;addItem(account,id,qty);saveData(data);await interaction.reply({embeds:[economyEmbed('Purchase Complete',`Bought **${qty}× ${it.emoji} ${it.name}** for ${COIN} **${fmt(cost)}**.`)]});return;}
+      if(cmd==='inventory'){const target=interaction.options.getUser('user')||user,a=getAccount(data,guild.id,target.id);const items=Object.entries(a.inventory).filter(([,q])=>q>0).map(([id,q])=>`${shopItems[id]?.emoji||'📦'} **${shopItems[id]?.name||id}** ×${q}`).join('\n');saveData(data);await interaction.reply({embeds:[economyEmbed(`${target.username}'s Inventory`,items||'Inventory is empty.') ]});return;}
+      if(cmd==='use'){const id=interaction.options.getString('item',true);if(!account.inventory[id]){await interaction.reply({content:'You do not own that item.',flags:MessageFlags.Ephemeral});return;}account.inventory[id]--;let result='';if(id==='bank_note'){const reward=randomInt(500,2200);account.wallet+=reward;account.earned+=reward;result=`The bank note was worth ${COIN} **${fmt(reward)}**.`;}else{const reward=randomInt(1000,5000);account.wallet+=reward;account.earned+=reward;if(Math.random()<.25){const choices=['fishing_rod','pickaxe','axe','lucky_charm'];const bonus=choices[randomInt(0,choices.length-1)];addItem(account,bonus);result=`The box contained ${COIN} **${fmt(reward)}** and **${shopItems[bonus].emoji} ${shopItems[bonus].name}**.`;}else result=`The box contained ${COIN} **${fmt(reward)}**.`;}saveData(data);await interaction.reply({embeds:[economyEmbed('Item Used',result)]});return;}
     }
 
     if (interaction.commandName === 'bakedmembers') {

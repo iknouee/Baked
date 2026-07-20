@@ -1,7 +1,7 @@
 {
   "name": "bing-bong-discord-bot",
   "version": "1.0.0",
-  "description": "Starter Discord bot with a /bing command that replies with bong.",
+  "description": "Discord bot for BKD with member roster and quote images.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,6 +10,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "discord.js": "^14.19.3"
+    "@napi-rs/canvas": "^0.1.80",
+    "discord.js": "^14.27.0"
   }
 }

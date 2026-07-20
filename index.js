@@ -40,7 +40,7 @@ const client = new Client({
 });
 
 // ======================================================
-// BAKED DATA
+// DATA STORAGE
 // ======================================================
 
 const dataFile = path.join(__dirname, 'baked-data.json');
@@ -56,10 +56,6 @@ const defaultData = {
     'BKDSPIDEY',
   ],
 
-  /*
-   * Every embed posted with /bakedmembers is stored here.
-   * When someone is added or removed, these embeds update.
-   */
   panels: [],
 };
 
@@ -79,8 +75,8 @@ function loadData() {
   createDataFile();
 
   try {
-    const fileContents = fs.readFileSync(dataFile, 'utf8');
-    const parsedData = JSON.parse(fileContents);
+    const rawData = fs.readFileSync(dataFile, 'utf8');
+    const parsedData = JSON.parse(rawData);
 
     if (!Array.isArray(parsedData.members)) {
       parsedData.members = [...defaultData.members];
@@ -94,12 +90,14 @@ function loadData() {
   } catch (error) {
     console.error('Failed to read baked-data.json:', error);
 
-    saveData(defaultData);
-
-    return {
+    const restoredData = {
       members: [...defaultData.members],
       panels: [],
     };
+
+    saveData(restoredData);
+
+    return restoredData;
   }
 }
 
@@ -130,49 +128,90 @@ function formatMemberName(name) {
 }
 
 // ======================================================
-// EMBED
+// MEMBER EMBED
 // ======================================================
 
 function createBakedMembersEmbed(guild) {
   const data = loadData();
   const members = data.members;
 
-  const memberList =
-    members.length > 0
-      ? members
-          .map((member, index) => {
-            const number = String(index + 1).padStart(2, '0');
-
-            return `\`${number}\`  **${member}**`;
-          })
-          .join('\n')
-      : '*No members have been added yet.*';
-
   const guildIcon = guild.iconURL({
     extension: 'png',
     size: 512,
   });
 
+  const midpoint = Math.ceil(members.length / 2);
+
+  const leftMembers = members.slice(0, midpoint);
+  const rightMembers = members.slice(midpoint);
+
+  function formatMemberColumn(memberList, startIndex) {
+    if (memberList.length === 0) {
+      return '—';
+    }
+
+    return memberList
+      .map((member, index) => {
+        const number = String(startIndex + index + 1).padStart(
+          2,
+          '0'
+        );
+
+        return `\`${number}\`  **${member}**`;
+      })
+      .join('\n\n');
+  }
+
   const embed = new EmbedBuilder()
-    .setColor(0xe78b32)
+    .setColor(0xf08a24)
     .setAuthor({
-      name: 'BAKED',
+      name: 'BKD • BAKED',
       iconURL: guildIcon || undefined,
     })
-    .setTitle('Official BKD Members')
+    .setTitle('OFFICIAL MEMBER ROSTER')
     .setDescription(
       [
-        'The official member list for **Baked**.',
+        'The official people representing **Baked**.',
         '',
-        memberList,
+        '━━━━━━━━━━━━━━━━━━━━',
       ].join('\n')
     )
+    .addFields(
+      {
+        name: 'MEMBERS',
+        value: formatMemberColumn(leftMembers, 0),
+        inline: true,
+      },
+      {
+        name: '\u200B',
+        value: formatMemberColumn(
+          rightMembers,
+          midpoint
+        ),
+        inline: true,
+      },
+      {
+        name: '\u200B',
+        value: '━━━━━━━━━━━━━━━━━━━━',
+        inline: false,
+      },
+      {
+        name: 'ROSTER STATUS',
+        value: `\`${members.length}\` active ${
+          members.length === 1 ? 'member' : 'members'
+        }`,
+        inline: true,
+      },
+      {
+        name: 'GROUP',
+        value: '`BKD — Baked`',
+        inline: true,
+      }
+    )
     .setFooter({
-      text: `${members.length} ${
-        members.length === 1 ? 'member' : 'members'
-      } • BKD stands for Baked`,
-    })
-    .setTimestamp();
+      text: 'Built different. Baked together.',
+      iconURL: guildIcon || undefined,
+    });
 
   if (guildIcon) {
     embed.setThumbnail(guildIcon);
@@ -182,40 +221,45 @@ function createBakedMembersEmbed(guild) {
 }
 
 // ======================================================
-// UPDATE ALL POSTED MEMBER EMBEDS
+// UPDATE ALL POSTED EMBEDS
 // ======================================================
 
 async function updateAllMemberPanels(guild) {
   const data = loadData();
-  const workingPanels = [];
+  const activePanels = [];
 
   for (const panel of data.panels) {
+    if (panel.guildId !== guild.id) {
+      activePanels.push(panel);
+      continue;
+    }
+
     try {
-      const channel = await guild.channels.fetch(panel.channelId);
+      const channel = await guild.channels.fetch(
+        panel.channelId
+      );
 
       if (!channel || !channel.isTextBased()) {
         continue;
       }
 
-      const message = await channel.messages.fetch(panel.messageId);
+      const message = await channel.messages.fetch(
+        panel.messageId
+      );
 
       await message.edit({
         embeds: [createBakedMembersEmbed(guild)],
       });
 
-      workingPanels.push(panel);
+      activePanels.push(panel);
     } catch (error) {
-      /*
-       * The channel or message may have been deleted.
-       * Dead panel entries are automatically removed.
-       */
       console.log(
-        `Removing an expired member panel: ${panel.messageId}`
+        `Removing expired member panel ${panel.messageId}.`
       );
     }
   }
 
-  data.panels = workingPanels;
+  data.panels = activePanels;
   saveData(data);
 }
 
@@ -231,11 +275,13 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('bakedmembers')
-    .setDescription('Posts the official Baked member list')
+    .setDescription('Posts the official Baked member roster')
     .addChannelOption((option) =>
       option
         .setName('channel')
-        .setDescription('Where should the member list be posted?')
+        .setDescription(
+          'Choose where the member roster should be posted'
+        )
         .addChannelTypes(
           ChannelType.GuildText,
           ChannelType.GuildAnnouncement
@@ -249,7 +295,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('addbakedmember')
-    .setDescription('Adds someone to the Baked member list')
+    .setDescription('Adds someone to the Baked roster')
     .addStringOption((option) =>
       option
         .setName('name')
@@ -265,7 +311,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('removebakedmember')
-    .setDescription('Removes someone from the Baked member list')
+    .setDescription('Removes someone from the Baked roster')
     .addStringOption((option) =>
       option
         .setName('member')
@@ -280,7 +326,7 @@ const commands = [
 ].map((command) => command.toJSON());
 
 // ======================================================
-// COMMAND REGISTRATION
+// REGISTER COMMANDS
 // ======================================================
 
 async function registerCommands() {
@@ -292,32 +338,35 @@ async function registerCommands() {
     console.log('Registering slash commands...');
 
     if (guildId) {
-      /*
-       * Guild commands normally appear within seconds.
-       * Recommended while testing.
-       */
       await rest.put(
-        Routes.applicationGuildCommands(clientId, guildId),
+        Routes.applicationGuildCommands(
+          clientId,
+          guildId
+        ),
         {
           body: commands,
         }
       );
 
       console.log(
-        `Slash commands registered in server ${guildId}.`
+        `Commands registered in server ${guildId}.`
       );
     } else {
-      /*
-       * Global commands can take longer to refresh.
-       */
-      await rest.put(Routes.applicationCommands(clientId), {
-        body: commands,
-      });
+      await rest.put(
+        Routes.applicationCommands(clientId),
+        {
+          body: commands,
+        }
+      );
 
       console.log('Global slash commands registered.');
     }
   } catch (error) {
-    console.error('Failed to register slash commands:', error);
+    console.error(
+      'Failed to register slash commands:',
+      error
+    );
+
     throw error;
   }
 }
@@ -328,7 +377,9 @@ async function registerCommands() {
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
-  console.log(`Connected to ${client.guilds.cache.size} server(s).`);
+  console.log(
+    `Connected to ${client.guilds.cache.size} server(s).`
+  );
 });
 
 // ======================================================
@@ -338,18 +389,22 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
 
-  if (interaction.commandName !== 'removebakedmember') return;
+  if (
+    interaction.commandName !== 'removebakedmember'
+  ) {
+    return;
+  }
 
   try {
-    const focusedValue = interaction.options
+    const searchText = interaction.options
       .getFocused()
       .toUpperCase();
 
     const data = loadData();
 
-    const choices = data.members
+    const results = data.members
       .filter((member) =>
-        member.toUpperCase().includes(focusedValue)
+        member.toUpperCase().includes(searchText)
       )
       .slice(0, 25)
       .map((member) => ({
@@ -357,7 +412,7 @@ client.on('interactionCreate', async (interaction) => {
         value: member,
       }));
 
-    await interaction.respond(choices);
+    await interaction.respond(results);
   } catch (error) {
     console.error('Autocomplete error:', error);
 
@@ -388,12 +443,15 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'bakedmembers') {
       const selectedChannel =
-        interaction.options.getChannel('channel', true);
+        interaction.options.getChannel(
+          'channel',
+          true
+        );
 
       if (!selectedChannel.isTextBased()) {
         await interaction.reply({
           content:
-            'That channel cannot receive the member embed.',
+            'That channel cannot receive messages.',
           flags: MessageFlags.Ephemeral,
         });
 
@@ -408,19 +466,25 @@ client.on('interactionCreate', async (interaction) => {
       const missingPermissions = [];
 
       if (
-        !permissions?.has(PermissionFlagsBits.ViewChannel)
+        !permissions?.has(
+          PermissionFlagsBits.ViewChannel
+        )
       ) {
         missingPermissions.push('View Channel');
       }
 
       if (
-        !permissions?.has(PermissionFlagsBits.SendMessages)
+        !permissions?.has(
+          PermissionFlagsBits.SendMessages
+        )
       ) {
         missingPermissions.push('Send Messages');
       }
 
       if (
-        !permissions?.has(PermissionFlagsBits.EmbedLinks)
+        !permissions?.has(
+          PermissionFlagsBits.EmbedLinks
+        )
       ) {
         missingPermissions.push('Embed Links');
       }
@@ -438,19 +502,23 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const postedMessage = await selectedChannel.send({
-        embeds: [
-          createBakedMembersEmbed(interaction.guild),
-        ],
-      });
+      const postedMessage =
+        await selectedChannel.send({
+          embeds: [
+            createBakedMembersEmbed(
+              interaction.guild
+            ),
+          ],
+        });
 
       const data = loadData();
 
-      const alreadyStored = data.panels.some(
-        (panel) => panel.messageId === postedMessage.id
+      const panelAlreadyExists = data.panels.some(
+        (panel) =>
+          panel.messageId === postedMessage.id
       );
 
-      if (!alreadyStored) {
+      if (!panelAlreadyExists) {
         data.panels.push({
           guildId: interaction.guild.id,
           channelId: selectedChannel.id,
@@ -462,7 +530,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         content:
-          `The Baked member list has been posted in ` +
+          `The Baked member roster was posted in ` +
           `${selectedChannel}.`,
         flags: MessageFlags.Ephemeral,
       });
@@ -474,13 +542,18 @@ client.on('interactionCreate', async (interaction) => {
     // /addbakedmember
     // --------------------------------------------------
 
-    if (interaction.commandName === 'addbakedmember') {
+    if (
+      interaction.commandName === 'addbakedmember'
+    ) {
       await interaction.deferReply({
         flags: MessageFlags.Ephemeral,
       });
 
       const providedName =
-        interaction.options.getString('name', true);
+        interaction.options.getString(
+          'name',
+          true
+        );
 
       const formattedName =
         formatMemberName(providedName);
@@ -490,7 +563,8 @@ client.on('interactionCreate', async (interaction) => {
         formattedName.length < 4
       ) {
         await interaction.editReply({
-          content: 'Please enter a valid member name.',
+          content:
+            'Please enter a valid member name.',
         });
 
         return;
@@ -498,17 +572,17 @@ client.on('interactionCreate', async (interaction) => {
 
       const data = loadData();
 
-      const memberAlreadyExists = data.members.some(
+      const alreadyExists = data.members.some(
         (member) =>
           member.toUpperCase() ===
           formattedName.toUpperCase()
       );
 
-      if (memberAlreadyExists) {
+      if (alreadyExists) {
         await interaction.editReply({
           content:
             `**${formattedName}** is already on the ` +
-            'Baked member list.',
+            'Baked roster.',
         });
 
         return;
@@ -517,23 +591,33 @@ client.on('interactionCreate', async (interaction) => {
       data.members.push(formattedName);
       saveData(data);
 
-      await updateAllMemberPanels(interaction.guild);
+      await updateAllMemberPanels(
+        interaction.guild
+      );
 
-      const confirmationEmbed = new EmbedBuilder()
-        .setColor(0x57f287)
-        .setTitle('Member Added')
-        .setDescription(
-          `**${formattedName}** has been added to Baked.`
-        )
-        .addFields({
-          name: 'Total Members',
-          value: String(data.members.length),
-          inline: true,
-        })
-        .setFooter({
-          text: `Added by ${interaction.user.username}`,
-        })
-        .setTimestamp();
+      const confirmationEmbed =
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setAuthor({
+            name: 'BKD • ROSTER UPDATED',
+            iconURL:
+              interaction.guild.iconURL({
+                extension: 'png',
+                size: 256,
+              }) || undefined,
+          })
+          .setTitle('Member Added')
+          .setDescription(
+            `**${formattedName}** is now officially part of **Baked**.`
+          )
+          .addFields({
+            name: 'Current roster',
+            value: `\`${data.members.length}\` members`,
+            inline: true,
+          })
+          .setFooter({
+            text: `Added by ${interaction.user.username}`,
+          });
 
       await interaction.editReply({
         embeds: [confirmationEmbed],
@@ -547,14 +631,18 @@ client.on('interactionCreate', async (interaction) => {
     // --------------------------------------------------
 
     if (
-      interaction.commandName === 'removebakedmember'
+      interaction.commandName ===
+      'removebakedmember'
     ) {
       await interaction.deferReply({
         flags: MessageFlags.Ephemeral,
       });
 
       const selectedMember =
-        interaction.options.getString('member', true);
+        interaction.options.getString(
+          'member',
+          true
+        );
 
       const data = loadData();
 
@@ -568,7 +656,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({
           content:
             `I could not find **${selectedMember}** ` +
-            'on the Baked member list.',
+            'on the Baked roster.',
         });
 
         return;
@@ -581,23 +669,33 @@ client.on('interactionCreate', async (interaction) => {
 
       saveData(data);
 
-      await updateAllMemberPanels(interaction.guild);
+      await updateAllMemberPanels(
+        interaction.guild
+      );
 
-      const confirmationEmbed = new EmbedBuilder()
-        .setColor(0xed4245)
-        .setTitle('Member Removed')
-        .setDescription(
-          `**${removedMember}** has been removed from Baked.`
-        )
-        .addFields({
-          name: 'Remaining Members',
-          value: String(data.members.length),
-          inline: true,
-        })
-        .setFooter({
-          text: `Removed by ${interaction.user.username}`,
-        })
-        .setTimestamp();
+      const confirmationEmbed =
+        new EmbedBuilder()
+          .setColor(0xed4245)
+          .setAuthor({
+            name: 'BKD • ROSTER UPDATED',
+            iconURL:
+              interaction.guild.iconURL({
+                extension: 'png',
+                size: 256,
+              }) || undefined,
+          })
+          .setTitle('Member Removed')
+          .setDescription(
+            `**${removedMember}** has been removed from the **Baked** roster.`
+          )
+          .addFields({
+            name: 'Current roster',
+            value: `\`${data.members.length}\` members`,
+            inline: true,
+          })
+          .setFooter({
+            text: `Removed by ${interaction.user.username}`,
+          });
 
       await interaction.editReply({
         embeds: [confirmationEmbed],
@@ -611,17 +709,11 @@ client.on('interactionCreate', async (interaction) => {
       error
     );
 
-    const errorResponse = {
-      content:
-        'Something went wrong while running that command. ' +
-        'Check your Render logs for more information.',
-      flags: MessageFlags.Ephemeral,
-    };
-
     if (interaction.deferred) {
       await interaction
         .editReply({
-          content: errorResponse.content,
+          content:
+            'Something went wrong while running that command. Check the Render logs.',
           embeds: [],
         })
         .catch(() => {});
@@ -631,14 +723,22 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.replied) {
       await interaction
-        .followUp(errorResponse)
+        .followUp({
+          content:
+            'Something went wrong while running that command. Check the Render logs.',
+          flags: MessageFlags.Ephemeral,
+        })
         .catch(() => {});
 
       return;
     }
 
     await interaction
-      .reply(errorResponse)
+      .reply({
+        content:
+          'Something went wrong while running that command. Check the Render logs.',
+        flags: MessageFlags.Ephemeral,
+      })
       .catch(() => {});
   }
 });
@@ -647,20 +747,24 @@ client.on('interactionCreate', async (interaction) => {
 // RENDER WEB SERVER
 // ======================================================
 
-const server = http.createServer((request, response) => {
-  response.writeHead(200, {
-    'Content-Type': 'text/plain',
-  });
+const server = http.createServer(
+  (request, response) => {
+    response.writeHead(200, {
+      'Content-Type': 'text/plain',
+    });
 
-  response.end(
-    client.isReady()
-      ? `BKD bot is online as ${client.user.tag}.`
-      : 'BKD bot is starting...'
-  );
-});
+    response.end(
+      client.isReady()
+        ? `BKD bot is online as ${client.user.tag}.`
+        : 'BKD bot is starting...'
+    );
+  }
+);
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Web server listening on port ${port}.`);
+  console.log(
+    `Web server listening on port ${port}.`
+  );
 });
 
 // ======================================================

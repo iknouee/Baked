@@ -69,6 +69,7 @@ const defaultData = {
   ],
   panels: [],
   replies: [],
+  economy: {},
 };
 
 function cloneDefaultData() {
@@ -76,6 +77,7 @@ function cloneDefaultData() {
     members: [...defaultData.members],
     panels: [],
     replies: [],
+    economy: {},
   };
 }
 
@@ -108,6 +110,10 @@ function loadData() {
 
     if (!Array.isArray(parsedData.replies)) {
       parsedData.replies = [];
+    }
+
+    if (!parsedData.economy || typeof parsedData.economy !== 'object' || Array.isArray(parsedData.economy)) {
+      parsedData.economy = {};
     }
 
     return parsedData;
@@ -742,6 +748,168 @@ function isReplyOnCooldown(guildId, channelId, ruleId) {
   return false;
 }
 
+
+// ======================================================
+// ECONOMY HELPERS
+// ======================================================
+
+const ECONOMY_COLOR = 0xf0a020;
+const COIN = '🍪';
+const blackjackSessions = new Map();
+
+function economyKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+function getEconomyUser(data, guildId, userId) {
+  const key = economyKey(guildId, userId);
+
+  if (!data.economy[key]) {
+    data.economy[key] = {
+      wallet: 500,
+      bank: 0,
+      totalEarned: 500,
+      totalLost: 0,
+      wins: 0,
+      losses: 0,
+      dailyAt: 0,
+      workAt: 0,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  return data.economy[key];
+}
+
+function formatCoins(amount) {
+  return `${COIN} **${Math.max(0, Math.floor(amount)).toLocaleString('en-GB')}**`;
+}
+
+function parseBet(raw, wallet) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (value === 'all' || value === 'max') return wallet;
+  if (value === 'half') return Math.floor(wallet / 2);
+
+  const amount = Number(value.replace(/,/g, ''));
+  if (!Number.isSafeInteger(amount)) return null;
+  return amount;
+}
+
+function timeRemaining(milliseconds) {
+  const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function economyEmbed(user, title, description) {
+  return new EmbedBuilder()
+    .setColor(ECONOMY_COLOR)
+    .setAuthor({
+      name: 'BKD ECONOMY',
+      iconURL: user.displayAvatarURL({ extension: 'png', size: 128 }),
+    })
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({ text: 'Play smart. Don’t go broke.' });
+}
+
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function shuffledDeck() {
+  const suits = ['♠', '♥', '♦', '♣'];
+  const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const deck = [];
+
+  for (const suit of suits) {
+    for (const rank of ranks) deck.push({ rank, suit });
+  }
+
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+
+  return deck;
+}
+
+function handValue(hand) {
+  let value = 0;
+  let aces = 0;
+
+  for (const card of hand) {
+    if (card.rank === 'A') {
+      value += 11;
+      aces += 1;
+    } else if (['J', 'Q', 'K'].includes(card.rank)) {
+      value += 10;
+    } else {
+      value += Number(card.rank);
+    }
+  }
+
+  while (value > 21 && aces > 0) {
+    value -= 10;
+    aces -= 1;
+  }
+
+  return value;
+}
+
+function cardText(card) {
+  return `\`${card.rank}${card.suit}\``;
+}
+
+function blackjackEmbed(session, revealDealer = false, result = null) {
+  const playerValue = handValue(session.player);
+  const dealerValue = handValue(session.dealer);
+  const dealerCards = revealDealer
+    ? session.dealer.map(cardText).join(' ')
+    : `${cardText(session.dealer[0])} \`??\``;
+
+  const embed = new EmbedBuilder()
+    .setColor(result?.color || ECONOMY_COLOR)
+    .setAuthor({ name: 'BKD CASINO • BLACKJACK' })
+    .setTitle(result?.title || `Bet: ${formatCoins(session.bet)}`)
+    .addFields(
+      {
+        name: `Dealer${revealDealer ? ` • ${dealerValue}` : ''}`,
+        value: dealerCards,
+      },
+      {
+        name: `Your hand • ${playerValue}`,
+        value: session.player.map(cardText).join(' '),
+      }
+    )
+    .setFooter({ text: result?.footer || 'Hit for another card or stand to hold.' });
+
+  if (result?.description) embed.setDescription(result.description);
+  return embed;
+}
+
+function blackjackButtons(sessionId, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`bj_hit:${sessionId}`)
+      .setLabel('Hit')
+      .setEmoji('➕')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId(`bj_stand:${sessionId}`)
+      .setLabel('Stand')
+      .setEmoji('✋')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled)
+  );
+}
+
 // ======================================================
 // APPLICATION COMMANDS
 // ======================================================
@@ -850,6 +1018,95 @@ const commands = [
     .setName('listreplies')
     .setDescription('Shows all automatic reply triggers')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+
+
+  new SlashCommandBuilder()
+    .setName('balance')
+    .setDescription('Shows an economy balance')
+    .addUserOption((option) =>
+      option.setName('user').setDescription('Member to view').setRequired(false)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('daily')
+    .setDescription('Claims your daily coin reward')
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('work')
+    .setDescription('Works a random job for coins')
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('pay')
+    .setDescription('Sends coins to another member')
+    .addUserOption((option) =>
+      option.setName('user').setDescription('Member receiving the coins').setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option.setName('amount').setDescription('Amount to send').setMinValue(1).setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('deposit')
+    .setDescription('Moves wallet coins into your bank')
+    .addStringOption((option) =>
+      option.setName('amount').setDescription('Number, half, or all').setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('withdraw')
+    .setDescription('Moves bank coins into your wallet')
+    .addStringOption((option) =>
+      option.setName('amount').setDescription('Number, half, or all').setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('Shows the richest members in the server')
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('coinflip')
+    .setDescription('Bet coins on heads or tails')
+    .addStringOption((option) =>
+      option.setName('side').setDescription('Choose a side').addChoices(
+        { name: 'Heads', value: 'heads' },
+        { name: 'Tails', value: 'tails' }
+      ).setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName('bet').setDescription('Number, half, or all').setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('dice')
+    .setDescription('Roll against the dealer; highest roll wins')
+    .addStringOption((option) =>
+      option.setName('bet').setDescription('Number, half, or all').setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('slots')
+    .setDescription('Spin the BKD slot machine')
+    .addStringOption((option) =>
+      option.setName('bet').setDescription('Number, half, or all').setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('blackjack')
+    .setDescription('Play blackjack against the dealer')
+    .addStringOption((option) =>
+      option.setName('bet').setDescription('Number, half, or all').setRequired(true)
+    )
     .setDMPermission(false),
 
   new ContextMenuCommandBuilder()
@@ -1070,6 +1327,401 @@ client.on('interactionCreate', async (interaction) => {
         'I could not create that quote image. Check the Render logs for the error.',
       files: [],
       components: [],
+    });
+  }
+});
+
+
+// ======================================================
+// ECONOMY COMMAND HANDLER
+// ======================================================
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const economyCommands = new Set([
+    'balance', 'daily', 'work', 'pay', 'deposit', 'withdraw',
+    'leaderboard', 'coinflip', 'dice', 'slots', 'blackjack',
+  ]);
+
+  if (!economyCommands.has(interaction.commandName)) return;
+
+  try {
+    const data = loadData();
+    const account = getEconomyUser(data, interaction.guild.id, interaction.user.id);
+
+    if (interaction.commandName === 'balance') {
+      const target = interaction.options.getUser('user') || interaction.user;
+      const targetAccount = getEconomyUser(data, interaction.guild.id, target.id);
+      saveData(data);
+
+      const netWorth = targetAccount.wallet + targetAccount.bank;
+      const embed = economyEmbed(
+        target,
+        `${target.username}'s balance`,
+        [
+          `**Wallet**\n${formatCoins(targetAccount.wallet)}`,
+          `\n**Bank**\n${formatCoins(targetAccount.bank)}`,
+          `\n**Net worth**\n${formatCoins(netWorth)}`,
+        ].join('\n')
+      ).addFields(
+        { name: 'Casino record', value: `\`${targetAccount.wins}W / ${targetAccount.losses}L\``, inline: true },
+        { name: 'Lifetime earned', value: formatCoins(targetAccount.totalEarned), inline: true }
+      );
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (interaction.commandName === 'daily') {
+      const cooldown = 24 * 60 * 60 * 1000;
+      const remaining = cooldown - (Date.now() - account.dailyAt);
+
+      if (remaining > 0) {
+        await interaction.reply({
+          content: `You already claimed your daily. Come back in **${timeRemaining(remaining)}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const reward = randomInt(750, 1250);
+      account.wallet += reward;
+      account.totalEarned += reward;
+      account.dailyAt = Date.now();
+      saveData(data);
+
+      await interaction.reply({
+        embeds: [economyEmbed(interaction.user, 'Daily claimed', `You collected ${formatCoins(reward)}.\n\nWallet: ${formatCoins(account.wallet)}`)],
+      });
+      return;
+    }
+
+    if (interaction.commandName === 'work') {
+      const cooldown = 15 * 60 * 1000;
+      const remaining = cooldown - (Date.now() - account.workAt);
+
+      if (remaining > 0) {
+        await interaction.reply({
+          content: `You need a break. Work again in **${timeRemaining(remaining)}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const jobs = [
+        ['edited a montage', 180, 420],
+        ['delivered suspicious parcels', 220, 500],
+        ['moderated the server', 150, 360],
+        ['won a Roblox tournament', 240, 560],
+        ['sold rare snacks', 170, 440],
+        ['cleaned the group chat', 130, 330],
+      ];
+      const [job, min, max] = jobs[randomInt(0, jobs.length - 1)];
+      const reward = randomInt(min, max);
+
+      account.wallet += reward;
+      account.totalEarned += reward;
+      account.workAt = Date.now();
+      saveData(data);
+
+      await interaction.reply({
+        embeds: [economyEmbed(interaction.user, 'Shift complete', `You **${job}** and earned ${formatCoins(reward)}.\n\nWallet: ${formatCoins(account.wallet)}`)],
+      });
+      return;
+    }
+
+    if (interaction.commandName === 'pay') {
+      const target = interaction.options.getUser('user', true);
+      const amount = interaction.options.getInteger('amount', true);
+
+      if (target.bot || target.id === interaction.user.id) {
+        await interaction.reply({ content: 'Choose another real member.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (amount > account.wallet) {
+        await interaction.reply({ content: `You only have ${formatCoins(account.wallet)} in your wallet.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const receiver = getEconomyUser(data, interaction.guild.id, target.id);
+      account.wallet -= amount;
+      receiver.wallet += amount;
+      saveData(data);
+
+      await interaction.reply({
+        embeds: [economyEmbed(interaction.user, 'Payment sent', `You sent ${formatCoins(amount)} to ${target}.\n\nWallet: ${formatCoins(account.wallet)}`)],
+      });
+      return;
+    }
+
+    if (interaction.commandName === 'deposit' || interaction.commandName === 'withdraw') {
+      const depositing = interaction.commandName === 'deposit';
+      const available = depositing ? account.wallet : account.bank;
+      const amount = parseBet(interaction.options.getString('amount', true), available);
+
+      if (!amount || amount < 1 || amount > available) {
+        await interaction.reply({ content: `Enter a valid amount. You have ${formatCoins(available)} available.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (depositing) {
+        account.wallet -= amount;
+        account.bank += amount;
+      } else {
+        account.bank -= amount;
+        account.wallet += amount;
+      }
+      saveData(data);
+
+      await interaction.reply({
+        embeds: [economyEmbed(interaction.user, depositing ? 'Deposit complete' : 'Withdrawal complete', `${formatCoins(amount)} moved ${depositing ? 'into your bank' : 'into your wallet'}.\n\nWallet: ${formatCoins(account.wallet)}\nBank: ${formatCoins(account.bank)}`)],
+      });
+      return;
+    }
+
+    if (interaction.commandName === 'leaderboard') {
+      const entries = Object.entries(data.economy)
+        .filter(([key]) => key.startsWith(`${interaction.guild.id}:`))
+        .map(([key, value]) => ({ userId: key.split(':')[1], worth: (value.wallet || 0) + (value.bank || 0) }))
+        .sort((a, b) => b.worth - a.worth)
+        .slice(0, 10);
+
+      if (!entries.length) {
+        await interaction.reply({ content: 'Nobody has an economy account yet.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const lines = entries.map((entry, index) => `${index + 1 === 1 ? '🥇' : index + 1 === 2 ? '🥈' : index + 1 === 3 ? '🥉' : `\`${index + 1}.\``} <@${entry.userId}> — ${formatCoins(entry.worth)}`);
+      await interaction.reply({ embeds: [economyEmbed(interaction.user, 'Richest in BKD', lines.join('\n\n'))] });
+      return;
+    }
+
+    const rawBet = interaction.options.getString('bet', true);
+    const bet = parseBet(rawBet, account.wallet);
+
+    if (!bet || bet < 10) {
+      await interaction.reply({ content: 'The minimum bet is **10 coins**.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (bet > account.wallet) {
+      await interaction.reply({ content: `You only have ${formatCoins(account.wallet)} in your wallet.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.commandName === 'coinflip') {
+      const chosen = interaction.options.getString('side', true);
+      const result = Math.random() < 0.5 ? 'heads' : 'tails';
+      const won = chosen === result;
+
+      account.wallet += won ? bet : -bet;
+      won ? (account.wins += 1) : (account.losses += 1);
+      if (won) account.totalEarned += bet;
+      else account.totalLost += bet;
+      saveData(data);
+
+      const embed = economyEmbed(
+        interaction.user,
+        won ? 'You called it' : 'Wrong side',
+        `The coin landed **${result.toUpperCase()}**.\n\n${won ? `You won ${formatCoins(bet)}` : `You lost ${formatCoins(bet)}`}\nWallet: ${formatCoins(account.wallet)}`
+      ).setColor(won ? 0x57f287 : 0xed4245);
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (interaction.commandName === 'dice') {
+      const playerRoll = randomInt(1, 6);
+      const dealerRoll = randomInt(1, 6);
+      let outcome = 'draw';
+      if (playerRoll > dealerRoll) outcome = 'win';
+      if (playerRoll < dealerRoll) outcome = 'loss';
+
+      if (outcome === 'win') {
+        account.wallet += bet;
+        account.wins += 1;
+        account.totalEarned += bet;
+      } else if (outcome === 'loss') {
+        account.wallet -= bet;
+        account.losses += 1;
+        account.totalLost += bet;
+      }
+      saveData(data);
+
+      const title = outcome === 'win' ? 'You rolled higher' : outcome === 'loss' ? 'Dealer rolled higher' : 'Push';
+      const color = outcome === 'win' ? 0x57f287 : outcome === 'loss' ? 0xed4245 : ECONOMY_COLOR;
+      await interaction.reply({
+        embeds: [economyEmbed(interaction.user, title, `You rolled **${playerRoll}** 🎲\nDealer rolled **${dealerRoll}** 🎲\n\n${outcome === 'win' ? `Won ${formatCoins(bet)}` : outcome === 'loss' ? `Lost ${formatCoins(bet)}` : 'Your bet was returned.'}\nWallet: ${formatCoins(account.wallet)}`).setColor(color)],
+      });
+      return;
+    }
+
+    if (interaction.commandName === 'slots') {
+      const symbols = ['🍒', '🍋', '🍇', '🔔', '💎', '7️⃣'];
+      const reels = [symbols[randomInt(0, symbols.length - 1)], symbols[randomInt(0, symbols.length - 1)], symbols[randomInt(0, symbols.length - 1)]];
+      let multiplier = 0;
+
+      if (reels.every((symbol) => symbol === '7️⃣')) multiplier = 8;
+      else if (reels.every((symbol) => symbol === '💎')) multiplier = 6;
+      else if (reels[0] === reels[1] && reels[1] === reels[2]) multiplier = 4;
+      else if (new Set(reels).size === 2) multiplier = 1.5;
+
+      const payout = Math.floor(bet * multiplier);
+      const profit = payout - bet;
+      account.wallet += profit;
+
+      if (profit > 0) {
+        account.wins += 1;
+        account.totalEarned += profit;
+      } else {
+        account.losses += 1;
+        account.totalLost += bet;
+      }
+      saveData(data);
+
+      const won = profit > 0;
+      const embed = economyEmbed(
+        interaction.user,
+        multiplier >= 6 ? 'JACKPOT' : won ? 'Winner' : 'No luck',
+        `╭────────────╮\n│  ${reels.join('  ')}  │\n╰────────────╯\n\n${won ? `Payout: ${formatCoins(payout)}\nProfit: ${formatCoins(profit)}` : `Lost ${formatCoins(bet)}`}\nWallet: ${formatCoins(account.wallet)}`
+      ).setColor(won ? 0x57f287 : 0xed4245);
+
+      await interaction.reply({ embeds: [embed] });
+      return;
+    }
+
+    if (interaction.commandName === 'blackjack') {
+      account.wallet -= bet;
+      saveData(data);
+
+      const deck = shuffledDeck();
+      const sessionId = `${interaction.id}-${Math.random().toString(36).slice(2, 7)}`;
+      const session = {
+        id: sessionId,
+        guildId: interaction.guild.id,
+        userId: interaction.user.id,
+        bet,
+        deck,
+        player: [deck.pop(), deck.pop()],
+        dealer: [deck.pop(), deck.pop()],
+        createdAt: Date.now(),
+      };
+      blackjackSessions.set(sessionId, session);
+
+      const playerBlackjack = handValue(session.player) === 21;
+      if (playerBlackjack) {
+        const fresh = loadData();
+        const freshAccount = getEconomyUser(fresh, session.guildId, session.userId);
+        const payout = Math.floor(bet * 2.5);
+        freshAccount.wallet += payout;
+        freshAccount.wins += 1;
+        freshAccount.totalEarned += payout - bet;
+        saveData(fresh);
+        blackjackSessions.delete(sessionId);
+
+        await interaction.reply({
+          embeds: [blackjackEmbed(session, true, { title: 'Natural blackjack', description: `Paid ${formatCoins(payout)}.`, color: 0x57f287, footer: 'Blackjack pays 3:2.' })],
+          components: [blackjackButtons(sessionId, true)],
+        });
+        return;
+      }
+
+      await interaction.reply({
+        embeds: [blackjackEmbed(session)],
+        components: [blackjackButtons(sessionId)],
+      });
+    }
+  } catch (error) {
+    console.error('Economy command error:', error);
+    const payload = { content: 'The economy command failed. Check the Render logs.', flags: MessageFlags.Ephemeral };
+    if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+    else await interaction.reply(payload).catch(() => {});
+  }
+});
+
+// ======================================================
+// BLACKJACK BUTTONS
+// ======================================================
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('bj_')) return;
+
+  const [action, sessionId] = interaction.customId.split(':');
+  const session = blackjackSessions.get(sessionId);
+
+  if (!session) {
+    await interaction.reply({ content: 'That blackjack game has expired.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (interaction.user.id !== session.userId) {
+    await interaction.reply({ content: 'This is not your blackjack hand.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (Date.now() - session.createdAt > 5 * 60 * 1000) {
+    blackjackSessions.delete(sessionId);
+    await interaction.update({ components: [blackjackButtons(sessionId, true)] });
+    return;
+  }
+
+  if (action === 'bj_hit') {
+    session.player.push(session.deck.pop());
+    const value = handValue(session.player);
+
+    if (value > 21) {
+      const data = loadData();
+      const account = getEconomyUser(data, session.guildId, session.userId);
+      account.losses += 1;
+      account.totalLost += session.bet;
+      saveData(data);
+      blackjackSessions.delete(sessionId);
+
+      await interaction.update({
+        embeds: [blackjackEmbed(session, true, { title: 'Bust', description: `You lost ${formatCoins(session.bet)}.`, color: 0xed4245, footer: 'Better luck next hand.' })],
+        components: [blackjackButtons(sessionId, true)],
+      });
+      return;
+    }
+
+    await interaction.update({
+      embeds: [blackjackEmbed(session)],
+      components: [blackjackButtons(sessionId)],
+    });
+    return;
+  }
+
+  if (action === 'bj_stand') {
+    while (handValue(session.dealer) < 17) session.dealer.push(session.deck.pop());
+
+    const playerValue = handValue(session.player);
+    const dealerValue = handValue(session.dealer);
+    const data = loadData();
+    const account = getEconomyUser(data, session.guildId, session.userId);
+    let result;
+
+    if (dealerValue > 21 || playerValue > dealerValue) {
+      account.wallet += session.bet * 2;
+      account.wins += 1;
+      account.totalEarned += session.bet;
+      result = { title: 'You win', description: `Profit: ${formatCoins(session.bet)}.`, color: 0x57f287, footer: `Wallet: ${account.wallet.toLocaleString('en-GB')} coins` };
+    } else if (playerValue === dealerValue) {
+      account.wallet += session.bet;
+      result = { title: 'Push', description: 'Your bet was returned.', color: ECONOMY_COLOR, footer: `Wallet: ${account.wallet.toLocaleString('en-GB')} coins` };
+    } else {
+      account.losses += 1;
+      account.totalLost += session.bet;
+      result = { title: 'Dealer wins', description: `You lost ${formatCoins(session.bet)}.`, color: 0xed4245, footer: `Wallet: ${account.wallet.toLocaleString('en-GB')} coins` };
+    }
+
+    saveData(data);
+    blackjackSessions.delete(sessionId);
+
+    await interaction.update({
+      embeds: [blackjackEmbed(session, true, result)],
+      components: [blackjackButtons(sessionId, true)],
     });
   }
 });

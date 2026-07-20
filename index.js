@@ -19,7 +19,6 @@ const {
 const {
   createCanvas,
   loadImage,
-  GlobalFonts,
 } = require('@napi-rs/canvas');
 
 const fs = require('fs');
@@ -33,13 +32,10 @@ const http = require('http');
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
-const port = process.env.PORT || 10000;
+const port = Number(process.env.PORT || 10000);
 
 if (!token || !clientId) {
-  console.error(
-    'Missing DISCORD_TOKEN or CLIENT_ID environment variable.'
-  );
-
+  console.error('Missing DISCORD_TOKEN or CLIENT_ID environment variable.');
   process.exit(1);
 }
 
@@ -50,6 +46,8 @@ if (!token || !clientId) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -69,16 +67,24 @@ const defaultData = {
     'BKDCHELS',
     'BKDSPIDEY',
   ],
-
   panels: [],
+  replies: [],
 };
+
+function cloneDefaultData() {
+  return {
+    members: [...defaultData.members],
+    panels: [],
+    replies: [],
+  };
+}
 
 function createDataFile() {
   if (fs.existsSync(dataFile)) return;
 
   fs.writeFileSync(
     dataFile,
-    JSON.stringify(defaultData, null, 2),
+    JSON.stringify(cloneDefaultData(), null, 2),
     'utf8'
   );
 
@@ -100,17 +106,16 @@ function loadData() {
       parsedData.panels = [];
     }
 
+    if (!Array.isArray(parsedData.replies)) {
+      parsedData.replies = [];
+    }
+
     return parsedData;
   } catch (error) {
     console.error('Failed to read baked-data.json:', error);
 
-    const restoredData = {
-      members: [...defaultData.members],
-      panels: [],
-    };
-
+    const restoredData = cloneDefaultData();
     saveData(restoredData);
-
     return restoredData;
   }
 }
@@ -124,7 +129,7 @@ function saveData(data) {
 }
 
 // ======================================================
-// MEMBER NAME FORMATTING
+// MEMBER HELPERS
 // ======================================================
 
 function formatMemberName(name) {
@@ -141,10 +146,6 @@ function formatMemberName(name) {
   return formattedName;
 }
 
-// ======================================================
-// MEMBER EMBED
-// ======================================================
-
 function createBakedMembersEmbed(guild) {
   const data = loadData();
   const members = data.members;
@@ -155,22 +156,15 @@ function createBakedMembersEmbed(guild) {
   });
 
   const midpoint = Math.ceil(members.length / 2);
-
   const leftMembers = members.slice(0, midpoint);
   const rightMembers = members.slice(midpoint);
 
   function formatMemberColumn(memberList, startIndex) {
-    if (memberList.length === 0) {
-      return '—';
-    }
+    if (memberList.length === 0) return '—';
 
     return memberList
       .map((member, index) => {
-        const number = String(startIndex + index + 1).padStart(
-          2,
-          '0'
-        );
-
+        const number = String(startIndex + index + 1).padStart(2, '0');
         return `\`${number}\`  **${member}**`;
       })
       .join('\n\n');
@@ -183,13 +177,11 @@ function createBakedMembersEmbed(guild) {
       iconURL: guildIcon || undefined,
     })
     .setTitle('OFFICIAL MEMBER ROSTER')
-    .setDescription(
-      [
-        'The official people representing **Baked**.',
-        '',
-        '━━━━━━━━━━━━━━━━━━━━',
-      ].join('\n')
-    )
+    .setDescription([
+      'The official people representing **Baked**.',
+      '',
+      '━━━━━━━━━━━━━━━━━━━━',
+    ].join('\n'))
     .addFields(
       {
         name: 'MEMBERS',
@@ -198,10 +190,7 @@ function createBakedMembersEmbed(guild) {
       },
       {
         name: '\u200B',
-        value: formatMemberColumn(
-          rightMembers,
-          midpoint
-        ),
+        value: formatMemberColumn(rightMembers, midpoint),
         inline: true,
       },
       {
@@ -234,10 +223,6 @@ function createBakedMembersEmbed(guild) {
   return embed;
 }
 
-// ======================================================
-// UPDATE ALL POSTED ROSTER EMBEDS
-// ======================================================
-
 async function updateAllMemberPanels(guild) {
   const data = loadData();
   const activePanels = [];
@@ -249,27 +234,21 @@ async function updateAllMemberPanels(guild) {
     }
 
     try {
-      const channel = await guild.channels.fetch(
-        panel.channelId
-      );
+      const channel = await guild.channels.fetch(panel.channelId);
 
       if (!channel || !channel.isTextBased()) {
         continue;
       }
 
-      const message = await channel.messages.fetch(
-        panel.messageId
-      );
+      const message = await channel.messages.fetch(panel.messageId);
 
       await message.edit({
         embeds: [createBakedMembersEmbed(guild)],
       });
 
       activePanels.push(panel);
-    } catch (error) {
-      console.log(
-        `Removing expired member panel ${panel.messageId}.`
-      );
+    } catch {
+      console.log(`Removing expired member panel ${panel.messageId}.`);
     }
   }
 
@@ -281,33 +260,14 @@ async function updateAllMemberPanels(guild) {
 // QUOTE IMAGE HELPERS
 // ======================================================
 
-function roundedRectangle(
-  context,
-  x,
-  y,
-  width,
-  height,
-  radius
-) {
-  const safeRadius = Math.min(
-    radius,
-    width / 2,
-    height / 2
-  );
+function roundedRectangle(context, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
 
   context.beginPath();
   context.moveTo(x + safeRadius, y);
   context.lineTo(x + width - safeRadius, y);
-  context.quadraticCurveTo(
-    x + width,
-    y,
-    x + width,
-    y + safeRadius
-  );
-  context.lineTo(
-    x + width,
-    y + height - safeRadius
-  );
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
   context.quadraticCurveTo(
     x + width,
     y + height,
@@ -315,31 +275,14 @@ function roundedRectangle(
     y + height
   );
   context.lineTo(x + safeRadius, y + height);
-  context.quadraticCurveTo(
-    x,
-    y + height,
-    x,
-    y + height - safeRadius
-  );
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
   context.lineTo(x, y + safeRadius);
-  context.quadraticCurveTo(
-    x,
-    y,
-    x + safeRadius,
-    y
-  );
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
   context.closePath();
 }
 
-function drawCircleImage(
-  context,
-  image,
-  x,
-  y,
-  size
-) {
+function drawCircleImage(context, image, x, y, size) {
   context.save();
-
   context.beginPath();
   context.arc(
     x + size / 2,
@@ -350,22 +293,15 @@ function drawCircleImage(
   );
   context.closePath();
   context.clip();
-
   context.drawImage(image, x, y, size, size);
-
   context.restore();
 }
 
 function cleanMessageContent(content) {
-  if (!content) {
-    return '';
-  }
+  if (!content) return '';
 
   return content
-    .replace(
-      /<a?:([a-zA-Z0-9_]+):\d+>/g,
-      ':$1:'
-    )
+    .replace(/<a?:([a-zA-Z0-9_]+):\d+>/g, ':$1:')
     .replace(/<@!?(\d+)>/g, '@user')
     .replace(/<@&(\d+)>/g, '@role')
     .replace(/<#(\d+)>/g, '#channel')
@@ -379,11 +315,7 @@ function cleanMessageContent(content) {
     .trim();
 }
 
-function splitLongWord(
-  context,
-  word,
-  maximumWidth
-) {
+function splitLongWord(context, word, maximumWidth) {
   const pieces = [];
   let currentPiece = '';
 
@@ -391,8 +323,7 @@ function splitLongWord(
     const testPiece = currentPiece + character;
 
     if (
-      context.measureText(testPiece).width >
-        maximumWidth &&
+      context.measureText(testPiece).width > maximumWidth &&
       currentPiece
     ) {
       pieces.push(currentPiece);
@@ -402,18 +333,11 @@ function splitLongWord(
     }
   }
 
-  if (currentPiece) {
-    pieces.push(currentPiece);
-  }
-
+  if (currentPiece) pieces.push(currentPiece);
   return pieces;
 }
 
-function wrapText(
-  context,
-  text,
-  maximumWidth
-) {
+function wrapText(context, text, maximumWidth) {
   const paragraphs = text.split('\n');
   const lines = [];
 
@@ -427,17 +351,8 @@ function wrapText(
     const words = [];
 
     for (const word of originalWords) {
-      if (
-        context.measureText(word).width >
-        maximumWidth
-      ) {
-        words.push(
-          ...splitLongWord(
-            context,
-            word,
-            maximumWidth
-          )
-        );
+      if (context.measureText(word).width > maximumWidth) {
+        words.push(...splitLongWord(context, word, maximumWidth));
       } else {
         words.push(word);
       }
@@ -446,13 +361,10 @@ function wrapText(
     let currentLine = '';
 
     for (const word of words) {
-      const testLine = currentLine
-        ? `${currentLine} ${word}`
-        : word;
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
 
       if (
-        context.measureText(testLine).width >
-          maximumWidth &&
+        context.measureText(testLine).width > maximumWidth &&
         currentLine
       ) {
         lines.push(currentLine);
@@ -462,38 +374,26 @@ function wrapText(
       }
     }
 
-    if (currentLine) {
-      lines.push(currentLine);
-    }
+    if (currentLine) lines.push(currentLine);
   }
 
   return lines;
 }
 
-function truncateLines(
-  context,
-  lines,
-  maximumLines,
-  maximumWidth
-) {
-  if (lines.length <= maximumLines) {
-    return lines;
-  }
+function truncateLines(context, lines, maximumLines, maximumWidth) {
+  if (lines.length <= maximumLines) return lines;
 
   const shortenedLines = lines.slice(0, maximumLines);
   let finalLine = shortenedLines[maximumLines - 1];
 
   while (
-    context.measureText(`${finalLine}…`).width >
-      maximumWidth &&
+    context.measureText(`${finalLine}…`).width > maximumWidth &&
     finalLine.length > 0
   ) {
     finalLine = finalLine.slice(0, -1);
   }
 
-  shortenedLines[maximumLines - 1] =
-    `${finalLine.trim()}…`;
-
+  shortenedLines[maximumLines - 1] = `${finalLine.trim()}…`;
   return shortenedLines;
 }
 
@@ -509,62 +409,34 @@ function formatQuoteDate(date) {
   }).format(date);
 }
 
-function getFirstImageAttachment(message) {
-  return message.attachments.find((attachment) => {
-    const contentType =
-      attachment.contentType?.toLowerCase() || '';
-
-    return (
-      contentType.startsWith('image/') ||
-      /\.(png|jpe?g|webp|gif)$/i.test(
-        attachment.name || ''
-      )
-    );
-  });
-}
-
 async function safelyLoadImage(url) {
   if (!url) return null;
 
   try {
     return await loadImage(url);
   } catch (error) {
-    console.error(
-      `Unable to load image ${url}:`,
-      error.message
-    );
-
+    console.error(`Unable to load image ${url}:`, error.message);
     return null;
   }
 }
 
-async function createQuoteImage(
-  message,
-  guild
-) {
+async function createQuoteImage(message, guild) {
   const canvasWidth = 1200;
   const horizontalPadding = 78;
-  const contentWidth =
-    canvasWidth - horizontalPadding * 2;
-
-  const authorMember = message.member;
+  const contentWidth = canvasWidth - horizontalPadding * 2;
 
   const displayName =
-    authorMember?.displayName ||
+    message.member?.displayName ||
     message.author.globalName ||
     message.author.username;
 
   const username = `@${message.author.username}`;
 
-  let messageContent = cleanMessageContent(
-    message.content
-  );
+  let messageContent = cleanMessageContent(message.content);
 
   if (!messageContent) {
     if (message.stickers.size > 0) {
-      messageContent = `[Sticker: ${
-        message.stickers.first().name
-      }]`;
+      messageContent = `[Sticker: ${message.stickers.first().name}]`;
     } else if (message.attachments.size > 0) {
       messageContent = 'Shared an attachment';
     } else {
@@ -572,41 +444,25 @@ async function createQuoteImage(
     }
   }
 
-  const avatarUrl =
+  const avatarImage = await safelyLoadImage(
     message.author.displayAvatarURL({
       extension: 'png',
       size: 256,
       forceStatic: true,
-    });
-
-  const guildIconUrl = guild.iconURL({
-    extension: 'png',
-    size: 256,
-  });
-
-  const imageAttachment =
-    getFirstImageAttachment(message);
-
-  const avatarImage =
-    await safelyLoadImage(avatarUrl);
-
-  const guildIcon =
-    await safelyLoadImage(guildIconUrl);
-
-  const attachedImage = imageAttachment
-    ? await safelyLoadImage(imageAttachment.url)
-    : null;
-
-  const measurementCanvas = createCanvas(
-    canvasWidth,
-    500
+    })
   );
 
-  const measurementContext =
-    measurementCanvas.getContext('2d');
+  const guildIcon = await safelyLoadImage(
+    guild.iconURL({
+      extension: 'png',
+      size: 256,
+    })
+  );
 
-  measurementContext.font =
-    '600 40px Arial, sans-serif';
+  const measurementCanvas = createCanvas(canvasWidth, 500);
+  const measurementContext = measurementCanvas.getContext('2d');
+
+  measurementContext.font = '600 40px Arial, sans-serif';
 
   let messageLines = wrapText(
     measurementContext,
@@ -617,105 +473,34 @@ async function createQuoteImage(
   messageLines = truncateLines(
     measurementContext,
     messageLines,
-    attachedImage ? 8 : 12,
+    12,
     contentWidth - 100
   );
 
   const lineHeight = 58;
-  const textAreaHeight = Math.max(
-    100,
-    messageLines.length * lineHeight
-  );
-
-  let attachmentHeight = 0;
-  let attachmentWidth = 0;
-
-  if (attachedImage) {
-    const maximumAttachmentWidth =
-      contentWidth - 100;
-
-    const maximumAttachmentHeight = 470;
-
-    const imageRatio =
-      attachedImage.width / attachedImage.height;
-
-    attachmentWidth = maximumAttachmentWidth;
-    attachmentHeight =
-      attachmentWidth / imageRatio;
-
-    if (
-      attachmentHeight >
-      maximumAttachmentHeight
-    ) {
-      attachmentHeight =
-        maximumAttachmentHeight;
-      attachmentWidth =
-        attachmentHeight * imageRatio;
-    }
-  }
-
+  const textAreaHeight = Math.max(120, messageLines.length * lineHeight);
   const headerHeight = 190;
-  const quoteTopPadding = 45;
-  const quoteBottomPadding = 55;
-
-  const imageSpacing =
-    attachedImage ? 35 : 0;
-
-  const cardHeight =
-    headerHeight +
-    quoteTopPadding +
-    textAreaHeight +
-    imageSpacing +
-    attachmentHeight +
-    quoteBottomPadding;
-
+  const cardHeight = headerHeight + textAreaHeight + 130;
   const footerHeight = 105;
-  const canvasHeight =
-    cardHeight + footerHeight + 80;
+  const canvasHeight = cardHeight + footerHeight + 80;
 
-  const canvas = createCanvas(
-    canvasWidth,
-    canvasHeight
-  );
-
+  const canvas = createCanvas(canvasWidth, canvasHeight);
   const context = canvas.getContext('2d');
 
-  // ----------------------------------------------------
-  // BACKGROUND
-  // ----------------------------------------------------
-
-  const backgroundGradient =
-    context.createLinearGradient(
-      0,
-      0,
-      canvasWidth,
-      canvasHeight
-    );
-
-  backgroundGradient.addColorStop(
-    0,
-    '#09090b'
-  );
-
-  backgroundGradient.addColorStop(
-    0.55,
-    '#111114'
-  );
-
-  backgroundGradient.addColorStop(
-    1,
-    '#1f130b'
-  );
-
-  context.fillStyle = backgroundGradient;
-  context.fillRect(
+  const backgroundGradient = context.createLinearGradient(
     0,
     0,
     canvasWidth,
     canvasHeight
   );
 
-  // Decorative glow
+  backgroundGradient.addColorStop(0, '#09090b');
+  backgroundGradient.addColorStop(0.55, '#111114');
+  backgroundGradient.addColorStop(1, '#1f130b');
+
+  context.fillStyle = backgroundGradient;
+  context.fillRect(0, 0, canvasWidth, canvasHeight);
+
   const glow = context.createRadialGradient(
     canvasWidth - 130,
     80,
@@ -725,46 +510,11 @@ async function createQuoteImage(
     480
   );
 
-  glow.addColorStop(
-    0,
-    'rgba(240, 138, 36, 0.24)'
-  );
-
-  glow.addColorStop(
-    1,
-    'rgba(240, 138, 36, 0)'
-  );
+  glow.addColorStop(0, 'rgba(240, 138, 36, 0.24)');
+  glow.addColorStop(1, 'rgba(240, 138, 36, 0)');
 
   context.fillStyle = glow;
-  context.fillRect(
-    0,
-    0,
-    canvasWidth,
-    canvasHeight
-  );
-
-  // Subtle background texture
-  context.globalAlpha = 0.045;
-  context.fillStyle = '#ffffff';
-
-  for (let x = -canvasHeight; x < canvasWidth; x += 52) {
-    context.save();
-    context.translate(x, 0);
-    context.rotate(-0.35);
-    context.fillRect(
-      0,
-      0,
-      2,
-      canvasHeight * 2
-    );
-    context.restore();
-  }
-
-  context.globalAlpha = 1;
-
-  // ----------------------------------------------------
-  // MAIN CARD SHADOW
-  // ----------------------------------------------------
+  context.fillRect(0, 0, canvasWidth, canvasHeight);
 
   context.save();
   context.shadowColor = 'rgba(0, 0, 0, 0.55)';
@@ -784,10 +534,6 @@ async function createQuoteImage(
   context.fill();
   context.restore();
 
-  // ----------------------------------------------------
-  // MAIN CARD
-  // ----------------------------------------------------
-
   roundedRectangle(
     context,
     42,
@@ -797,58 +543,32 @@ async function createQuoteImage(
     32
   );
 
-  const cardGradient =
-    context.createLinearGradient(
-      42,
-      38,
-      canvasWidth - 42,
-      cardHeight
-    );
-
-  cardGradient.addColorStop(
-    0,
-    '#1c1c21'
+  const cardGradient = context.createLinearGradient(
+    42,
+    38,
+    canvasWidth - 42,
+    cardHeight
   );
 
-  cardGradient.addColorStop(
-    1,
-    '#141417'
-  );
+  cardGradient.addColorStop(0, '#1c1c21');
+  cardGradient.addColorStop(1, '#141417');
 
   context.fillStyle = cardGradient;
   context.fill();
-
-  context.strokeStyle =
-    'rgba(255, 255, 255, 0.08)';
-
+  context.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   context.lineWidth = 2;
   context.stroke();
 
-  // Accent bar
-  const accentGradient =
-    context.createLinearGradient(
-      42,
-      0,
-      canvasWidth - 42,
-      0
-    );
-
-  accentGradient.addColorStop(
+  const accentGradient = context.createLinearGradient(
+    42,
     0,
-    '#f08a24'
+    canvasWidth - 42,
+    0
   );
 
-  accentGradient.addColorStop(
-    0.55,
-    '#ffb45f'
-  );
-
-  accentGradient.addColorStop(
-    1,
-    '#f08a24'
-  );
-
-  context.save();
+  accentGradient.addColorStop(0, '#f08a24');
+  accentGradient.addColorStop(0.55, '#ffb45f');
+  accentGradient.addColorStop(1, '#f08a24');
 
   roundedRectangle(
     context,
@@ -861,11 +581,6 @@ async function createQuoteImage(
 
   context.fillStyle = accentGradient;
   context.fill();
-  context.restore();
-
-  // ----------------------------------------------------
-  // AUTHOR HEADER
-  // ----------------------------------------------------
 
   const avatarSize = 94;
   const avatarX = 92;
@@ -873,11 +588,8 @@ async function createQuoteImage(
 
   if (avatarImage) {
     context.save();
-
-    context.shadowColor =
-      'rgba(240, 138, 36, 0.45)';
+    context.shadowColor = 'rgba(240, 138, 36, 0.45)';
     context.shadowBlur = 24;
-
     context.beginPath();
     context.arc(
       avatarX + avatarSize / 2,
@@ -886,7 +598,6 @@ async function createQuoteImage(
       0,
       Math.PI * 2
     );
-
     context.fillStyle = '#f08a24';
     context.fill();
     context.restore();
@@ -898,39 +609,10 @@ async function createQuoteImage(
       avatarY,
       avatarSize
     );
-  } else {
-    context.beginPath();
-    context.arc(
-      avatarX + avatarSize / 2,
-      avatarY + avatarSize / 2,
-      avatarSize / 2,
-      0,
-      Math.PI * 2
-    );
-
-    context.fillStyle = '#2b2b31';
-    context.fill();
-
-    context.fillStyle = '#f08a24';
-    context.font =
-      '700 38px Arial, sans-serif';
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-
-    context.fillText(
-      displayName.charAt(0).toUpperCase(),
-      avatarX + avatarSize / 2,
-      avatarY + avatarSize / 2 + 2
-    );
-
-    context.textAlign = 'left';
-    context.textBaseline = 'alphabetic';
   }
 
   context.fillStyle = '#ffffff';
-  context.font =
-    '700 38px Arial, sans-serif';
-
+  context.font = '700 38px Arial, sans-serif';
   context.fillText(
     displayName,
     avatarX + avatarSize + 28,
@@ -938,233 +620,126 @@ async function createQuoteImage(
   );
 
   context.fillStyle = '#9b9ba5';
-  context.font =
-    '500 25px Arial, sans-serif';
-
+  context.font = '500 25px Arial, sans-serif';
   context.fillText(
     username,
     avatarX + avatarSize + 28,
     avatarY + 76
   );
 
-  // QUOTED badge
   const badgeText = 'QUOTED';
-  context.font =
-    '700 18px Arial, sans-serif';
+  context.font = '700 18px Arial, sans-serif';
 
-  const badgeWidth =
-    context.measureText(badgeText).width + 34;
+  const badgeWidth = context.measureText(badgeText).width + 34;
+  const badgeX = canvasWidth - 92 - badgeWidth;
 
-  const badgeX =
-    canvasWidth - 92 - badgeWidth;
-
-  roundedRectangle(
-    context,
-    badgeX,
-    106,
-    badgeWidth,
-    40,
-    20
-  );
-
-  context.fillStyle =
-    'rgba(240, 138, 36, 0.14)';
+  roundedRectangle(context, badgeX, 106, badgeWidth, 40, 20);
+  context.fillStyle = 'rgba(240, 138, 36, 0.14)';
   context.fill();
-
-  context.strokeStyle =
-    'rgba(240, 138, 36, 0.45)';
+  context.strokeStyle = 'rgba(240, 138, 36, 0.45)';
   context.lineWidth = 1.5;
   context.stroke();
 
   context.fillStyle = '#ffac58';
-  context.fillText(
-    badgeText,
-    badgeX + 17,
-    133
-  );
-
-  // ----------------------------------------------------
-  // DIVIDER
-  // ----------------------------------------------------
+  context.fillText(badgeText, badgeX + 17, 133);
 
   context.beginPath();
-  context.moveTo(
-    horizontalPadding,
-    headerHeight + 24
-  );
-
-  context.lineTo(
-    canvasWidth - horizontalPadding,
-    headerHeight + 24
-  );
-
-  context.strokeStyle =
-    'rgba(255, 255, 255, 0.08)';
+  context.moveTo(horizontalPadding, headerHeight + 24);
+  context.lineTo(canvasWidth - horizontalPadding, headerHeight + 24);
+  context.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   context.lineWidth = 2;
   context.stroke();
 
-  // ----------------------------------------------------
-  // QUOTE MARK
-  // ----------------------------------------------------
-
-  context.fillStyle =
-    'rgba(240, 138, 36, 0.24)';
-
-  context.font =
-    '700 105px Georgia, serif';
-
-  context.fillText(
-    '“',
-    horizontalPadding + 5,
-    headerHeight + 118
-  );
-
-  // ----------------------------------------------------
-  // MESSAGE TEXT
-  // ----------------------------------------------------
+  context.fillStyle = 'rgba(240, 138, 36, 0.24)';
+  context.font = '700 105px Georgia, serif';
+  context.fillText('“', horizontalPadding + 5, headerHeight + 118);
 
   const textX = horizontalPadding + 80;
-  let textY =
-    headerHeight + quoteTopPadding + 50;
+  let textY = headerHeight + 95;
 
   context.fillStyle = '#f3f3f5';
-  context.font =
-    '600 40px Arial, sans-serif';
+  context.font = '600 40px Arial, sans-serif';
 
   for (const line of messageLines) {
-    context.fillText(
-      line,
-      textX,
-      textY
-    );
-
+    context.fillText(line, textX, textY);
     textY += lineHeight;
   }
-
-  // ----------------------------------------------------
-  // ATTACHED IMAGE
-  // ----------------------------------------------------
-
-  if (attachedImage) {
-    const imageX =
-      horizontalPadding +
-      (contentWidth - attachmentWidth) / 2;
-
-    const imageY =
-      headerHeight +
-      quoteTopPadding +
-      textAreaHeight +
-      imageSpacing;
-
-    context.save();
-
-    roundedRectangle(
-      context,
-      imageX,
-      imageY,
-      attachmentWidth,
-      attachmentHeight,
-      24
-    );
-
-    context.clip();
-
-    context.drawImage(
-      attachedImage,
-      imageX,
-      imageY,
-      attachmentWidth,
-      attachmentHeight
-    );
-
-    context.restore();
-
-    roundedRectangle(
-      context,
-      imageX,
-      imageY,
-      attachmentWidth,
-      attachmentHeight,
-      24
-    );
-
-    context.strokeStyle =
-      'rgba(255, 255, 255, 0.10)';
-
-    context.lineWidth = 2;
-    context.stroke();
-  }
-
-  // ----------------------------------------------------
-  // FOOTER
-  // ----------------------------------------------------
 
   const footerY = cardHeight + 75;
 
   if (guildIcon) {
-    drawCircleImage(
-      context,
-      guildIcon,
-      67,
-      footerY - 18,
-      46
-    );
+    drawCircleImage(context, guildIcon, 67, footerY - 18, 46);
   }
 
   context.fillStyle = '#eeeeef';
-  context.font =
-    '700 22px Arial, sans-serif';
+  context.font = '700 22px Arial, sans-serif';
 
-  const serverTextX = guildIcon
-    ? 128
-    : 72;
-
-  context.fillText(
-    guild.name,
-    serverTextX,
-    footerY + 13
-  );
+  const serverTextX = guildIcon ? 128 : 72;
+  context.fillText(guild.name, serverTextX, footerY + 13);
 
   context.fillStyle = '#85858f';
-  context.font =
-    '500 20px Arial, sans-serif';
+  context.font = '500 20px Arial, sans-serif';
 
-  const channelName =
-    message.channel?.name || 'unknown-channel';
+  const channelName = message.channel?.name || 'unknown-channel';
 
   context.fillText(
-    `#${channelName}  •  ${formatQuoteDate(
-      message.createdAt
-    )}`,
+    `#${channelName}  •  ${formatQuoteDate(message.createdAt)}`,
     serverTextX,
     footerY + 45
   );
 
   context.textAlign = 'right';
-
   context.fillStyle = '#f08a24';
-  context.font =
-    '800 25px Arial, sans-serif';
-
-  context.fillText(
-    'BKD',
-    canvasWidth - 70,
-    footerY + 10
-  );
+  context.font = '800 25px Arial, sans-serif';
+  context.fillText('BKD', canvasWidth - 70, footerY + 10);
 
   context.fillStyle = '#85858f';
-  context.font =
-    '600 18px Arial, sans-serif';
-
-  context.fillText(
-    'BAKED QUOTES',
-    canvasWidth - 70,
-    footerY + 41
-  );
+  context.font = '600 18px Arial, sans-serif';
+  context.fillText('BAKED QUOTES', canvasWidth - 70, footerY + 41);
 
   context.textAlign = 'left';
 
   return canvas.toBuffer('image/png');
+}
+
+// ======================================================
+// AUTO-REPLY HELPERS
+// ======================================================
+
+const replyCooldowns = new Map();
+
+function normaliseTrigger(value) {
+  return value.trim().toLowerCase();
+}
+
+function triggerMatches(messageContent, replyRule) {
+  const content = messageContent.toLowerCase();
+  const trigger = replyRule.trigger.toLowerCase();
+
+  if (replyRule.matchType === 'exact') {
+    return content.trim() === trigger;
+  }
+
+  return content.includes(trigger);
+}
+
+function isReplyOnCooldown(guildId, channelId, ruleId) {
+  const key = `${guildId}:${channelId}:${ruleId}`;
+  const now = Date.now();
+  const previous = replyCooldowns.get(key) || 0;
+  const cooldownMs = 5000;
+
+  if (now - previous < cooldownMs) {
+    return true;
+  }
+
+  replyCooldowns.set(key, now);
+
+  setTimeout(() => {
+    replyCooldowns.delete(key);
+  }, cooldownMs).unref?.();
+
+  return false;
 }
 
 // ======================================================
@@ -1183,18 +758,14 @@ const commands = [
     .addChannelOption((option) =>
       option
         .setName('channel')
-        .setDescription(
-          'Choose where the member roster should be posted'
-        )
+        .setDescription('Choose where the member roster should be posted')
         .addChannelTypes(
           ChannelType.GuildText,
           ChannelType.GuildAnnouncement
         )
         .setRequired(true)
     )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false),
 
   new SlashCommandBuilder()
@@ -1208,9 +779,7 @@ const commands = [
         .setMaxLength(25)
         .setRequired(true)
     )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false),
 
   new SlashCommandBuilder()
@@ -1223,9 +792,64 @@ const commands = [
         .setAutocomplete(true)
         .setRequired(true)
     )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('addreply')
+    .setDescription('Adds an automatic reply trigger')
+    .addStringOption((option) =>
+      option
+        .setName('trigger')
+        .setDescription('The word or phrase that activates the reply')
+        .setMinLength(1)
+        .setMaxLength(100)
+        .setRequired(true)
     )
+    .addStringOption((option) =>
+      option
+        .setName('response')
+        .setDescription('What the bot should reply with')
+        .setMinLength(1)
+        .setMaxLength(1800)
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('matching')
+        .setDescription('How the trigger should match messages')
+        .addChoices(
+          {
+            name: 'Contains trigger',
+            value: 'contains',
+          },
+          {
+            name: 'Exact message only',
+            value: 'exact',
+          }
+        )
+        .setRequired(false)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('removereply')
+    .setDescription('Removes an automatic reply trigger')
+    .addStringOption((option) =>
+      option
+        .setName('trigger')
+        .setDescription('Choose the trigger to remove')
+        .setAutocomplete(true)
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('listreplies')
+    .setDescription('Shows all automatic reply triggers')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false),
 
   new ContextMenuCommandBuilder()
@@ -1235,7 +859,7 @@ const commands = [
 ].map((command) => command.toJSON());
 
 // ======================================================
-// REGISTER COMMANDS
+// COMMAND REGISTRATION
 // ======================================================
 
 async function registerCommands() {
@@ -1243,55 +867,82 @@ async function registerCommands() {
     version: '10',
   }).setToken(token);
 
-  try {
-    console.log('Registering application commands...');
+  console.log('Registering application commands...');
 
-    if (guildId) {
-      await rest.put(
-        Routes.applicationGuildCommands(
-          clientId,
-          guildId
-        ),
-        {
-          body: commands,
-        }
-      );
-
-      console.log(
-        `Commands registered in server ${guildId}.`
-      );
-    } else {
-      await rest.put(
-        Routes.applicationCommands(clientId),
-        {
-          body: commands,
-        }
-      );
-
-      console.log(
-        'Global application commands registered.'
-      );
-    }
-  } catch (error) {
-    console.error(
-      'Failed to register application commands:',
-      error
+  if (guildId) {
+    await rest.put(
+      Routes.applicationGuildCommands(clientId, guildId),
+      {
+        body: commands,
+      }
     );
 
-    throw error;
+    console.log(`Commands registered in server ${guildId}.`);
+  } else {
+    await rest.put(
+      Routes.applicationCommands(clientId),
+      {
+        body: commands,
+      }
+    );
+
+    console.log('Global application commands registered.');
   }
 }
 
 // ======================================================
-// BOT READY
+// READY EVENT
 // ======================================================
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Connected to ${client.guilds.cache.size} server(s).`);
+});
 
-  console.log(
-    `Connected to ${client.guilds.cache.size} server(s).`
-  );
+// ======================================================
+// MESSAGE AUTO-REPLIES
+// ======================================================
+
+client.on('messageCreate', async (message) => {
+  if (!message.guild) return;
+  if (message.author.bot) return;
+  if (!message.content?.trim()) return;
+
+  try {
+    const data = loadData();
+
+    const guildReplies = data.replies.filter(
+      (reply) => reply.guildId === message.guild.id
+    );
+
+    for (const replyRule of guildReplies) {
+      if (!triggerMatches(message.content, replyRule)) {
+        continue;
+      }
+
+      if (
+        isReplyOnCooldown(
+          message.guild.id,
+          message.channel.id,
+          replyRule.id
+        )
+      ) {
+        continue;
+      }
+
+      await message.reply({
+        content: replyRule.response,
+        allowedMentions: {
+          repliedUser: false,
+          parse: [],
+        },
+      });
+
+      break;
+    }
+  } catch (error) {
+    console.error('Automatic reply error:', error);
+  }
 });
 
 // ======================================================
@@ -1301,33 +952,45 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
 
-  if (
-    interaction.commandName !== 'removebakedmember'
-  ) {
-    return;
-  }
-
   try {
     const searchText = interaction.options
       .getFocused()
-      .toUpperCase();
+      .toLowerCase();
 
     const data = loadData();
 
-    const results = data.members
-      .filter((member) =>
-        member.toUpperCase().includes(searchText)
-      )
-      .slice(0, 25)
-      .map((member) => ({
-        name: member,
-        value: member,
-      }));
+    if (interaction.commandName === 'removebakedmember') {
+      const results = data.members
+        .filter((member) =>
+          member.toLowerCase().includes(searchText)
+        )
+        .slice(0, 25)
+        .map((member) => ({
+          name: member,
+          value: member,
+        }));
 
-    await interaction.respond(results);
+      await interaction.respond(results);
+      return;
+    }
+
+    if (interaction.commandName === 'removereply') {
+      const results = data.replies
+        .filter(
+          (reply) =>
+            reply.guildId === interaction.guildId &&
+            reply.trigger.toLowerCase().includes(searchText)
+        )
+        .slice(0, 25)
+        .map((reply) => ({
+          name: `${reply.trigger} (${reply.matchType})`.slice(0, 100),
+          value: reply.id,
+        }));
+
+      await interaction.respond(results);
+    }
   } catch (error) {
     console.error('Autocomplete error:', error);
-
     await interaction.respond([]).catch(() => {});
   }
 });
@@ -1337,13 +1000,8 @@ client.on('interactionCreate', async (interaction) => {
 // ======================================================
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isMessageContextMenuCommand()) {
-    return;
-  }
-
-  if (interaction.commandName !== 'Make Quote') {
-    return;
-  }
+  if (!interaction.isMessageContextMenuCommand()) return;
+  if (interaction.commandName !== 'Make Quote') return;
 
   await interaction.deferReply();
 
@@ -1352,19 +1010,15 @@ client.on('interactionCreate', async (interaction) => {
 
     if (!interaction.guild) {
       await interaction.editReply({
-        content:
-          'Quotes can only be created inside a server.',
+        content: 'Quotes can only be created inside a server.',
       });
-
       return;
     }
 
     if (message.author.bot) {
       await interaction.editReply({
-        content:
-          'You cannot create a quote from a bot message.',
+        content: 'You cannot create a quote from a bot message.',
       });
-
       return;
     }
 
@@ -1375,10 +1029,8 @@ client.on('interactionCreate', async (interaction) => {
 
     if (!hasUsefulContent) {
       await interaction.editReply({
-        content:
-          'That message does not contain anything I can quote.',
+        content: 'That message does not contain anything I can quote.',
       });
-
       return;
     }
 
@@ -1391,21 +1043,19 @@ client.on('interactionCreate', async (interaction) => {
       .replace(/[^a-zA-Z0-9_-]/g, '')
       .slice(0, 30);
 
-    const quoteAttachment =
-      new AttachmentBuilder(quoteBuffer, {
+    const quoteAttachment = new AttachmentBuilder(
+      quoteBuffer,
+      {
         name: `quote-${safeUsername || 'member'}.png`,
-        description:
-          `A quote from ${message.author.username}`,
-      });
+        description: `A quote from ${message.author.username}`,
+      }
+    );
 
-    const messageLinkButton =
+    const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setLabel('View Original')
         .setStyle(ButtonStyle.Link)
-        .setURL(message.url);
-
-    const row = new ActionRowBuilder().addComponents(
-      messageLinkButton
+        .setURL(message.url)
     );
 
     await interaction.editReply({
@@ -1413,10 +1063,7 @@ client.on('interactionCreate', async (interaction) => {
       components: [row],
     });
   } catch (error) {
-    console.error(
-      'Failed to create quote:',
-      error
-    );
+    console.error('Failed to create quote:', error);
 
     await interaction.editReply({
       content:
@@ -1435,64 +1082,38 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
-    // --------------------------------------------------
-    // /bing
-    // --------------------------------------------------
-
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
       return;
     }
 
-    // --------------------------------------------------
-    // /bakedmembers
-    // --------------------------------------------------
-
     if (interaction.commandName === 'bakedmembers') {
-      const selectedChannel =
-        interaction.options.getChannel(
-          'channel',
-          true
-        );
+      const selectedChannel = interaction.options.getChannel(
+        'channel',
+        true
+      );
 
       if (!selectedChannel.isTextBased()) {
         await interaction.reply({
-          content:
-            'That channel cannot receive messages.',
+          content: 'That channel cannot receive messages.',
           flags: MessageFlags.Ephemeral,
         });
-
         return;
       }
 
       const botMember = interaction.guild.members.me;
-
-      const permissions =
-        selectedChannel.permissionsFor(botMember);
-
+      const permissions = selectedChannel.permissionsFor(botMember);
       const missingPermissions = [];
 
-      if (
-        !permissions?.has(
-          PermissionFlagsBits.ViewChannel
-        )
-      ) {
+      if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
         missingPermissions.push('View Channel');
       }
 
-      if (
-        !permissions?.has(
-          PermissionFlagsBits.SendMessages
-        )
-      ) {
+      if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
         missingPermissions.push('Send Messages');
       }
 
-      if (
-        !permissions?.has(
-          PermissionFlagsBits.EmbedLinks
-        )
-      ) {
+      if (!permissions?.has(PermissionFlagsBits.EmbedLinks)) {
         missingPermissions.push('Embed Links');
       }
 
@@ -1500,80 +1121,50 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({
           content:
             `I cannot post in ${selectedChannel}.\n` +
-            `Missing permissions: **${missingPermissions.join(
-              ', '
-            )}**`,
+            `Missing permissions: **${missingPermissions.join(', ')}**`,
           flags: MessageFlags.Ephemeral,
         });
-
         return;
       }
 
-      const postedMessage =
-        await selectedChannel.send({
-          embeds: [
-            createBakedMembersEmbed(
-              interaction.guild
-            ),
-          ],
-        });
+      const postedMessage = await selectedChannel.send({
+        embeds: [createBakedMembersEmbed(interaction.guild)],
+      });
 
       const data = loadData();
 
-      const panelAlreadyExists =
-        data.panels.some(
-          (panel) =>
-            panel.messageId === postedMessage.id
-        );
+      data.panels.push({
+        guildId: interaction.guild.id,
+        channelId: selectedChannel.id,
+        messageId: postedMessage.id,
+      });
 
-      if (!panelAlreadyExists) {
-        data.panels.push({
-          guildId: interaction.guild.id,
-          channelId: selectedChannel.id,
-          messageId: postedMessage.id,
-        });
-
-        saveData(data);
-      }
+      saveData(data);
 
       await interaction.reply({
-        content:
-          `The Baked member roster was posted in ${selectedChannel}.`,
+        content: `The Baked member roster was posted in ${selectedChannel}.`,
         flags: MessageFlags.Ephemeral,
       });
 
       return;
     }
 
-    // --------------------------------------------------
-    // /addbakedmember
-    // --------------------------------------------------
-
-    if (
-      interaction.commandName === 'addbakedmember'
-    ) {
+    if (interaction.commandName === 'addbakedmember') {
       await interaction.deferReply({
         flags: MessageFlags.Ephemeral,
       });
 
-      const providedName =
-        interaction.options.getString(
-          'name',
-          true
-        );
+      const providedName = interaction.options.getString(
+        'name',
+        true
+      );
 
-      const formattedName =
-        formatMemberName(providedName);
+      const formattedName = formatMemberName(providedName);
 
-      if (
-        formattedName === 'BKD' ||
-        formattedName.length < 4
-      ) {
+      if (formattedName === 'BKD' || formattedName.length < 4) {
         await interaction.editReply({
-          content:
-            'Please enter a valid member name.',
+          content: 'Please enter a valid member name.',
         });
-
         return;
       }
 
@@ -1581,8 +1172,7 @@ client.on('interactionCreate', async (interaction) => {
 
       const alreadyExists = data.members.some(
         (member) =>
-          member.toUpperCase() ===
-          formattedName.toUpperCase()
+          member.toUpperCase() === formattedName.toUpperCase()
       );
 
       if (alreadyExists) {
@@ -1590,72 +1180,51 @@ client.on('interactionCreate', async (interaction) => {
           content:
             `**${formattedName}** is already on the Baked roster.`,
         });
-
         return;
       }
 
       data.members.push(formattedName);
       saveData(data);
 
-      await updateAllMemberPanels(
-        interaction.guild
-      );
-
-      const confirmationEmbed =
-        new EmbedBuilder()
-          .setColor(0x57f287)
-          .setAuthor({
-            name: 'BKD • ROSTER UPDATED',
-            iconURL:
-              interaction.guild.iconURL({
-                extension: 'png',
-                size: 256,
-              }) || undefined,
-          })
-          .setTitle('Member Added')
-          .setDescription(
-            `**${formattedName}** is now officially part of **Baked**.`
-          )
-          .addFields({
-            name: 'Current roster',
-            value: `\`${data.members.length}\` members`,
-            inline: true,
-          })
-          .setFooter({
-            text: `Added by ${interaction.user.username}`,
-          });
+      await updateAllMemberPanels(interaction.guild);
 
       await interaction.editReply({
-        embeds: [confirmationEmbed],
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x57f287)
+            .setTitle('Member Added')
+            .setDescription(
+              `**${formattedName}** is now officially part of **Baked**.`
+            )
+            .addFields({
+              name: 'Current roster',
+              value: `\`${data.members.length}\` members`,
+              inline: true,
+            })
+            .setFooter({
+              text: `Added by ${interaction.user.username}`,
+            }),
+        ],
       });
 
       return;
     }
 
-    // --------------------------------------------------
-    // /removebakedmember
-    // --------------------------------------------------
-
-    if (
-      interaction.commandName ===
-      'removebakedmember'
-    ) {
+    if (interaction.commandName === 'removebakedmember') {
       await interaction.deferReply({
         flags: MessageFlags.Ephemeral,
       });
 
-      const selectedMember =
-        interaction.options.getString(
-          'member',
-          true
-        );
+      const selectedMember = interaction.options.getString(
+        'member',
+        true
+      );
 
       const data = loadData();
 
       const memberIndex = data.members.findIndex(
         (member) =>
-          member.toUpperCase() ===
-          selectedMember.toUpperCase()
+          member.toUpperCase() === selectedMember.toUpperCase()
       );
 
       if (memberIndex === -1) {
@@ -1663,47 +1232,215 @@ client.on('interactionCreate', async (interaction) => {
           content:
             `I could not find **${selectedMember}** on the Baked roster.`,
         });
-
         return;
       }
 
-      const [removedMember] = data.members.splice(
-        memberIndex,
-        1
-      );
+      const [removedMember] = data.members.splice(memberIndex, 1);
 
       saveData(data);
-
-      await updateAllMemberPanels(
-        interaction.guild
-      );
-
-      const confirmationEmbed =
-        new EmbedBuilder()
-          .setColor(0xed4245)
-          .setAuthor({
-            name: 'BKD • ROSTER UPDATED',
-            iconURL:
-              interaction.guild.iconURL({
-                extension: 'png',
-                size: 256,
-              }) || undefined,
-          })
-          .setTitle('Member Removed')
-          .setDescription(
-            `**${removedMember}** has been removed from the **Baked** roster.`
-          )
-          .addFields({
-            name: 'Current roster',
-            value: `\`${data.members.length}\` members`,
-            inline: true,
-          })
-          .setFooter({
-            text: `Removed by ${interaction.user.username}`,
-          });
+      await updateAllMemberPanels(interaction.guild);
 
       await interaction.editReply({
-        embeds: [confirmationEmbed],
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xed4245)
+            .setTitle('Member Removed')
+            .setDescription(
+              `**${removedMember}** has been removed from the **Baked** roster.`
+            )
+            .addFields({
+              name: 'Current roster',
+              value: `\`${data.members.length}\` members`,
+              inline: true,
+            })
+            .setFooter({
+              text: `Removed by ${interaction.user.username}`,
+            }),
+        ],
+      });
+
+      return;
+    }
+
+    if (interaction.commandName === 'addreply') {
+      await interaction.deferReply({
+        flags: MessageFlags.Ephemeral,
+      });
+
+      const trigger = normaliseTrigger(
+        interaction.options.getString('trigger', true)
+      );
+
+      const response = interaction.options
+        .getString('response', true)
+        .trim();
+
+      const matchType =
+        interaction.options.getString('matching') || 'contains';
+
+      if (!trigger) {
+        await interaction.editReply({
+          content: 'Please enter a valid trigger.',
+        });
+        return;
+      }
+
+      const data = loadData();
+
+      const duplicate = data.replies.some(
+        (reply) =>
+          reply.guildId === interaction.guild.id &&
+          reply.trigger.toLowerCase() === trigger &&
+          reply.matchType === matchType
+      );
+
+      if (duplicate) {
+        await interaction.editReply({
+          content:
+            `A **${matchType}** reply already exists for \`${trigger}\`.`,
+        });
+        return;
+      }
+
+      const replyRule = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        guildId: interaction.guild.id,
+        trigger,
+        response,
+        matchType,
+        createdBy: interaction.user.id,
+        createdAt: new Date().toISOString(),
+      };
+
+      data.replies.push(replyRule);
+      saveData(data);
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xf08a24)
+            .setTitle('Automatic Reply Added')
+            .addFields(
+              {
+                name: 'Trigger',
+                value: `\`${trigger}\``,
+                inline: true,
+              },
+              {
+                name: 'Matching',
+                value:
+                  matchType === 'exact'
+                    ? 'Exact message'
+                    : 'Contains trigger',
+                inline: true,
+              },
+              {
+                name: 'Bot response',
+                value: response,
+                inline: false,
+              }
+            )
+            .setFooter({
+              text: `Added by ${interaction.user.username}`,
+            }),
+        ],
+      });
+
+      return;
+    }
+
+    if (interaction.commandName === 'removereply') {
+      await interaction.deferReply({
+        flags: MessageFlags.Ephemeral,
+      });
+
+      const ruleId = interaction.options.getString(
+        'trigger',
+        true
+      );
+
+      const data = loadData();
+
+      const ruleIndex = data.replies.findIndex(
+        (reply) =>
+          reply.id === ruleId &&
+          reply.guildId === interaction.guild.id
+      );
+
+      if (ruleIndex === -1) {
+        await interaction.editReply({
+          content: 'I could not find that automatic reply.',
+        });
+        return;
+      }
+
+      const [removedRule] = data.replies.splice(ruleIndex, 1);
+      saveData(data);
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xed4245)
+            .setTitle('Automatic Reply Removed')
+            .setDescription(
+              `Removed the trigger \`${removedRule.trigger}\`.`
+            ),
+        ],
+      });
+
+      return;
+    }
+
+    if (interaction.commandName === 'listreplies') {
+      const data = loadData();
+
+      const guildReplies = data.replies.filter(
+        (reply) => reply.guildId === interaction.guild.id
+      );
+
+      if (guildReplies.length === 0) {
+        await interaction.reply({
+          content: 'There are no automatic replies set up yet.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const shownReplies = guildReplies.slice(0, 20);
+
+      const description = shownReplies
+        .map((reply, index) => {
+          const mode =
+            reply.matchType === 'exact' ? 'exact' : 'contains';
+
+          const shortenedResponse =
+            reply.response.length > 90
+              ? `${reply.response.slice(0, 87)}...`
+              : reply.response;
+
+          return (
+            `**${index + 1}.** \`${reply.trigger}\` ` +
+            `• ${mode}\n↳ ${shortenedResponse}`
+          );
+        })
+        .join('\n\n');
+
+      const embed = new EmbedBuilder()
+        .setColor(0xf08a24)
+        .setTitle('BKD Automatic Replies')
+        .setDescription(description)
+        .setFooter({
+          text:
+            guildReplies.length > shownReplies.length
+              ? `Showing 20 of ${guildReplies.length} replies`
+              : `${guildReplies.length} automatic ${
+                  guildReplies.length === 1 ? 'reply' : 'replies'
+                }`,
+        });
+
+      await interaction.reply({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
       });
 
       return;
@@ -1722,7 +1459,6 @@ client.on('interactionCreate', async (interaction) => {
           embeds: [],
         })
         .catch(() => {});
-
       return;
     }
 
@@ -1734,7 +1470,6 @@ client.on('interactionCreate', async (interaction) => {
           flags: MessageFlags.Ephemeral,
         })
         .catch(() => {});
-
       return;
     }
 
@@ -1752,24 +1487,20 @@ client.on('interactionCreate', async (interaction) => {
 // RENDER WEB SERVER
 // ======================================================
 
-const server = http.createServer(
-  (request, response) => {
-    response.writeHead(200, {
-      'Content-Type': 'text/plain',
-    });
+const server = http.createServer((request, response) => {
+  response.writeHead(200, {
+    'Content-Type': 'text/plain',
+  });
 
-    response.end(
-      client.isReady()
-        ? `BKD bot is online as ${client.user.tag}.`
-        : 'BKD bot is starting...'
-    );
-  }
-);
+  response.end(
+    client.isReady()
+      ? `BKD bot is online as ${client.user.tag}.`
+      : 'BKD bot is starting...'
+  );
+});
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(
-    `Web server listening on port ${port}.`
-  );
+  console.log(`Web server listening on port ${port}.`);
 });
 
 // ======================================================

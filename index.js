@@ -70,6 +70,7 @@ const defaultData = {
   panels: [],
   replies: [],
   economy: {},
+  chatbot: {},
 };
 
 function cloneDefaultData() {
@@ -78,6 +79,7 @@ function cloneDefaultData() {
     panels: [],
     replies: [],
     economy: {},
+    chatbot: {},
   };
 }
 
@@ -114,6 +116,10 @@ function loadData() {
 
     if (!parsedData.economy || typeof parsedData.economy !== 'object') {
       parsedData.economy = {};
+    }
+
+    if (!parsedData.chatbot || typeof parsedData.chatbot !== 'object') {
+      parsedData.chatbot = {};
     }
 
     return parsedData;
@@ -980,6 +986,175 @@ async function endSmashOrPassPoll(pollId) {
 }
 
 // ======================================================
+// LOCAL CONVERSATION ENGINE (NO EXTERNAL AI)
+// ======================================================
+
+const conversationState = new Map();
+const chatCooldowns = new Map();
+
+const chatBanks = {
+  greetings: [
+    'yo {name}', 'what you saying {name}', 'wassup {name}', 'im here 😭',
+    'hello troublemaker', 'look who finally showed up', 'yo gang', 'sup bro',
+  ],
+  howAreYou: [
+    'im chilling, watching this server fall apart', 'alive somehow 😭',
+    'better now that somebody remembered i exist', 'good until one of you starts drama',
+    'running on render and bad decisions', 'im calm for now',
+  ],
+  thanks: [
+    'anytime', 'got you', 'you already know', 'rare moment of appreciation',
+    'dont get emotional now', 'welcome gang',
+  ],
+  insults: [
+    'that was weak, try again', 'you typed that with confidence too 😭',
+    'im not arguing with someone whose profile picture looks like that',
+    'bro rehearsed that insult and still missed', 'delete this before people wake up',
+    'you are fighting a javascript file and losing',
+  ],
+  compliments: [
+    'finally someone with taste', 'you are not too bad yourself', 'real recognises real',
+    'say it louder for the people ignoring me', 'common {name} W',
+  ],
+  yes: ['yeah probably', '100%', 'obviously', 'id say yes', 'for sure', 'without a doubt'],
+  no: ['nah', 'absolutely not 😭', 'not happening', 'i doubt it', 'no chance', 'probably not'],
+  maybe: ['maybe', 'depends who is asking', 'could go either way', 'ask me again when the server is less chaotic'],
+  confused: ['what are you waffling about', 'run that back in english', 'you lost me halfway through', 'bro what 😭'],
+  laugh: ['😭', 'nahhh 😭', 'im crying', 'you lot are finished', 'that did not need to be said', 'foul 😭'],
+  boredom: [
+    'start some harmless drama then', 'go use /slots and lose your money',
+    'someone run smash or pass', 'talk to each other instead of staring at the member list',
+    'make a terrible confession, liven the place up',
+  ],
+  goodnight: ['night {name}', 'sleep well gang', 'dont let discord notifications wake you up', 'finally some peace and quiet'],
+  goodbye: ['later {name}', 'bye gang', 'see you when you get bored again', 'do not come back with drama'],
+  whoAreYou: [
+    'im BKD, unfortunately the smartest member here',
+    'the only member of this server who never sleeps',
+    'your favourite badly behaved discord bot',
+  ],
+  genericQuestions: [
+    'honestly, probably', 'i would not trust that', 'ask {other}, they act like they know everything',
+    'give me more context bro', 'my professional opinion is: chaos', 'that sounds suspicious',
+    'depends how brave you are', 'i have seen worse ideas in here',
+  ],
+  genericReplies: [
+    'real', 'fair enough', 'you might be onto something', 'that is crazy icl', 'noted 😭',
+    'why would you admit this publicly', 'this server needs supervision', 'say less',
+    'i was literally thinking that', 'some things should stay in drafts', 'big if true',
+  ],
+  callbacks: [
+    'we are still talking about {topic}?', 'not {topic} again 😭',
+    '{name} has been on about {topic} all day', 'the {topic} agenda continues',
+  ],
+};
+
+function getChatConfig(data, guildId) {
+  if (!data.chatbot[guildId]) {
+    data.chatbot[guildId] = {
+      enabled: true,
+      chance: 8,
+      channels: [],
+      ignoredUsers: [],
+      nicknames: {},
+      personality: 'chaotic',
+    };
+  }
+  const c = data.chatbot[guildId];
+  c.channels ||= [];
+  c.ignoredUsers ||= [];
+  c.nicknames ||= {};
+  c.chance = Number.isFinite(c.chance) ? c.chance : 8;
+  c.personality ||= 'chaotic';
+  return c;
+}
+
+function choice(items) { return items[Math.floor(Math.random() * items.length)]; }
+function chance(percent) { return Math.random() * 100 < percent; }
+function cleanForChat(value) {
+  return String(value || '').toLowerCase().replace(/<@!?\d+>/g, '').replace(/[^a-z0-9'?! ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function getDisplayName(message, config) {
+  return config.nicknames[message.author.id] || message.member?.displayName || message.author.globalName || message.author.username;
+}
+function rememberMessage(message) {
+  const key = `${message.guild.id}:${message.channel.id}`;
+  const history = conversationState.get(key) || [];
+  history.push({ userId: message.author.id, name: message.member?.displayName || message.author.username, content: cleanForChat(message.content), at: Date.now() });
+  while (history.length > 18) history.shift();
+  conversationState.set(key, history);
+  return history;
+}
+function extractTopic(history) {
+  const stop = new Set(['this','that','with','have','what','when','where','your','youre','they','them','just','like','really','about','from','been','were','will','would','could','should','bro','lol','lmao','nah','yeah']);
+  const counts = new Map();
+  for (const item of history.slice(-8)) {
+    for (const word of item.content.split(' ')) if (word.length > 4 && !stop.has(word)) counts.set(word, (counts.get(word)||0)+1);
+  }
+  return [...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] || null;
+}
+function fillChatTemplate(template, message, config, history) {
+  const name = getDisplayName(message, config);
+  const other = history.slice().reverse().find(x => x.userId !== message.author.id)?.name || 'someone here';
+  const topic = extractTopic(history) || 'that';
+  return template.replaceAll('{name}', name).replaceAll('{other}', other).replaceAll('{topic}', topic);
+}
+function classifyChat(content) {
+  if (/\b(hi|hey|hello|yo|sup|wassup|wsg)\b/.test(content)) return 'greetings';
+  if (/how (are|r) (you|u)|you good|u good/.test(content)) return 'howAreYou';
+  if (/\b(thanks|thank you|ty|appreciate)\b/.test(content)) return 'thanks';
+  if (/\b(stupid|dumb|idiot|shut up|ugly|useless|hate you|trash|mid bot)\b/.test(content)) return 'insults';
+  if (/\b(good bot|love you|best bot|funny bot|smart bot|w bot)\b/.test(content)) return 'compliments';
+  if (/\b(im bored|i am bored|dead chat|boring)\b/.test(content)) return 'boredom';
+  if (/\b(goodnight|good night|gn)\b/.test(content)) return 'goodnight';
+  if (/\b(bye|goodbye|later|cya)\b/.test(content)) return 'goodbye';
+  if (/who are you|what are you|who r u/.test(content)) return 'whoAreYou';
+  if (/\b(lol|lmao|lmfao|haha|😭|💀)\b/.test(content)) return 'laugh';
+  if (/\b(yes or no|should i|do you think|is .*\?|are .*\?|can .*\?|will .*\?)\b/.test(content) || content.endsWith('?')) return 'genericQuestions';
+  if (content.length < 3) return 'confused';
+  return 'genericReplies';
+}
+function createLocalReply(message, config, history, direct) {
+  const content = cleanForChat(message.content);
+  let category = classifyChat(content);
+  if (!direct && extractTopic(history) && chance(22)) category = 'callbacks';
+  let reply = fillChatTemplate(choice(chatBanks[category] || chatBanks.genericReplies), message, config, history);
+  if (config.personality === 'dry' && reply.length > 25) reply = choice(['real', 'fair', 'nah', 'crazy', '😭']);
+  if (config.personality === 'friendly' && category === 'insults') reply = choice(['be nice 😭', 'we can do better than that', 'love you too bro']);
+  return reply;
+}
+async function isReplyToBot(message) {
+  if (!message.reference?.messageId) return false;
+  try { const original = await message.channel.messages.fetch(message.reference.messageId); return original.author.id === client.user.id; }
+  catch { return false; }
+}
+async function handleLocalConversation(message, data) {
+  const config = getChatConfig(data, message.guild.id);
+  const history = rememberMessage(message);
+  if (!config.enabled || config.ignoredUsers.includes(message.author.id)) return false;
+  if (config.channels.length && !config.channels.includes(message.channel.id)) return false;
+  const mentioned = message.mentions.users.has(client.user.id);
+  const replied = await isReplyToBot(message);
+  const named = /\b(bkd bot|baked bot|bkd)\b/i.test(message.content);
+  const direct = mentioned || replied || named;
+  const activeChat = history.filter(x => Date.now() - x.at < 90000).length >= 4;
+  const spontaneous = activeChat && chance(Math.max(0, Math.min(35, config.chance)));
+  if (!direct && !spontaneous) return false;
+  const cooldownKey = `${message.guild.id}:${message.channel.id}`;
+  const wait = direct ? 2500 : 12000;
+  if (Date.now() - (chatCooldowns.get(cooldownKey) || 0) < wait) return false;
+  chatCooldowns.set(cooldownKey, Date.now());
+  const reply = createLocalReply(message, config, history, direct);
+  try {
+    await message.channel.sendTyping();
+    await new Promise(resolve => setTimeout(resolve, Math.min(2400, 450 + reply.length * 24 + randomInt(0, 500))));
+    await message.reply({ content: reply, allowedMentions: { repliedUser: false, parse: [] } });
+    if (chance(8)) await message.react(choice(['😭','💀','😂','🔥','🤨'])).catch(()=>{});
+    return true;
+  } catch (error) { console.error('Local conversation error:', error); return false; }
+}
+
+// ======================================================
 // APPLICATION COMMANDS
 // ======================================================
 
@@ -1138,6 +1313,20 @@ const commands = [
     )
     .setDMPermission(false),
 
+  new SlashCommandBuilder()
+    .setName('chatbot')
+    .setDescription('Controls the local BKD conversation system')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false)
+    .addSubcommand(o => o.setName('status').setDescription('Shows the chatbot settings'))
+    .addSubcommand(o => o.setName('enable').setDescription('Enables conversational replies'))
+    .addSubcommand(o => o.setName('disable').setDescription('Disables conversational replies'))
+    .addSubcommand(o => o.setName('channel').setDescription('Adds or removes a chatbot channel').addChannelOption(c => c.setName('channel').setDescription('Channel to toggle').addChannelTypes(ChannelType.GuildText).setRequired(true)))
+    .addSubcommand(o => o.setName('chance').setDescription('Sets spontaneous reply chance').addIntegerOption(v => v.setName('percent').setDescription('0 to 35 percent').setMinValue(0).setMaxValue(35).setRequired(true)))
+    .addSubcommand(o => o.setName('personality').setDescription('Changes the bot personality').addStringOption(v => v.setName('style').setDescription('Personality style').addChoices({name:'Chaotic',value:'chaotic'},{name:'Friendly',value:'friendly'},{name:'Dry',value:'dry'}).setRequired(true)))
+    .addSubcommand(o => o.setName('nickname').setDescription('Sets what the bot calls a member').addUserOption(u => u.setName('user').setDescription('Member').setRequired(true)).addStringOption(n => n.setName('name').setDescription('Nickname').setMinLength(1).setMaxLength(30).setRequired(true)))
+    .addSubcommand(o => o.setName('ignore').setDescription('Toggles whether the bot ignores a member').addUserOption(u => u.setName('user').setDescription('Member').setRequired(true))),
+
   new ContextMenuCommandBuilder()
     .setName('Make Quote')
     .setType(ApplicationCommandType.Message)
@@ -1190,45 +1379,20 @@ client.once('ready', () => {
 // ======================================================
 
 client.on('messageCreate', async (message) => {
-  if (!message.guild) return;
-  if (message.author.bot) return;
-  if (!message.content?.trim()) return;
-
+  if (!message.guild || message.author.bot || !message.content?.trim()) return;
   try {
     const data = loadData();
-
-    const guildReplies = data.replies.filter(
-      (reply) => reply.guildId === message.guild.id
-    );
-
+    const guildReplies = data.replies.filter(reply => reply.guildId === message.guild.id);
     for (const replyRule of guildReplies) {
-      if (!triggerMatches(message.content, replyRule)) {
-        continue;
-      }
-
-      if (
-        isReplyOnCooldown(
-          message.guild.id,
-          message.channel.id,
-          replyRule.id
-        )
-      ) {
-        continue;
-      }
-
-      await message.reply({
-        content: replyRule.response,
-        allowedMentions: {
-          repliedUser: false,
-          parse: [],
-        },
-      });
-
-      break;
+      if (!triggerMatches(message.content, replyRule)) continue;
+      if (isReplyOnCooldown(message.guild.id, message.channel.id, replyRule.id)) continue;
+      await message.reply({ content: replyRule.response, allowedMentions: { repliedUser: false, parse: [] } });
+      return;
     }
-  } catch (error) {
-    console.error('Automatic reply error:', error);
-  }
+    const configBefore = JSON.stringify(data.chatbot[message.guild.id] || null);
+    await handleLocalConversation(message, data);
+    if (JSON.stringify(data.chatbot[message.guild.id] || null) !== configBefore) saveData(data);
+  } catch (error) { console.error('Message handling error:', error); }
 });
 
 // ======================================================
@@ -1415,6 +1579,42 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
+      return;
+    }
+
+    if (interaction.commandName === 'chatbot') {
+      const data = loadData();
+      const config = getChatConfig(data, interaction.guildId);
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'enable') config.enabled = true;
+      if (sub === 'disable') config.enabled = false;
+      if (sub === 'chance') config.chance = interaction.options.getInteger('percent', true);
+      if (sub === 'personality') config.personality = interaction.options.getString('style', true);
+      if (sub === 'channel') {
+        const channel = interaction.options.getChannel('channel', true);
+        const index = config.channels.indexOf(channel.id);
+        if (index >= 0) config.channels.splice(index, 1); else config.channels.push(channel.id);
+      }
+      if (sub === 'nickname') {
+        const target = interaction.options.getUser('user', true);
+        config.nicknames[target.id] = interaction.options.getString('name', true).trim();
+      }
+      if (sub === 'ignore') {
+        const target = interaction.options.getUser('user', true);
+        const index = config.ignoredUsers.indexOf(target.id);
+        if (index >= 0) config.ignoredUsers.splice(index, 1); else config.ignoredUsers.push(target.id);
+      }
+      saveData(data);
+      const channelText = config.channels.length ? config.channels.map(id => `<#${id}>`).join(', ') : 'All text channels';
+      const embed = new EmbedBuilder().setColor(0xf08a24).setTitle('BKD Conversation System').setDescription('Local rule-based chat. No OpenAI or external AI API is used.').addFields(
+        {name:'Status',value:config.enabled?'🟢 Enabled':'🔴 Disabled',inline:true},
+        {name:'Personality',value:`\`${config.personality}\``,inline:true},
+        {name:'Random reply chance',value:`\`${config.chance}%\``,inline:true},
+        {name:'Channels',value:channelText.slice(0,1024),inline:false},
+        {name:'Ignored members',value:`\`${config.ignoredUsers.length}\``,inline:true},
+        {name:'Saved nicknames',value:`\`${Object.keys(config.nicknames).length}\``,inline:true}
+      ).setFooter({text:'Mentions and replies always have priority over random chat.'});
+      await interaction.reply({embeds:[embed], flags: sub === 'status' ? undefined : MessageFlags.Ephemeral});
       return;
     }
 

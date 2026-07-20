@@ -992,60 +992,139 @@ async function endSmashOrPassPoll(pollId) {
 const conversationState = new Map();
 const chatCooldowns = new Map();
 
+const recentChatReplies = new Map();
+
 const chatBanks = {
   greetings: [
-    'yo {name}', 'what you saying {name}', 'wassup {name}', 'im here 😭',
-    'hello troublemaker', 'look who finally showed up', 'yo gang', 'sup bro',
+    'yo {name}', 'wagwan {name}', 'what you saying gang', 'yo who let {name} in',
+    'my guy {name} has entered the building', 'safe {name}', 'look alive, {name} just spawned in',
+    'yo gangnem', 'what we on then', 'there goes the neighbourhood 😭', 'big {name} in the chat',
+    'say less, im here', 'who summoned the mandem', 'yo bossman', 'alright calm down im awake',
   ],
   howAreYou: [
-    'im chilling, watching this server fall apart', 'alive somehow 😭',
-    'better now that somebody remembered i exist', 'good until one of you starts drama',
-    'running on render and bad decisions', 'im calm for now',
+    'im calm, just monitoring the streets of discord', 'surviving off electricity and pure aura',
+    'im good bro, server looks dodgy though', 'chilling like i do not have 40 commands to run',
+    'still standing, still dangerous, still hosted on render', 'im blessed, slightly laggy but blessed',
+    'im on timing today icl', 'good until one of you starts moving federal',
+    'living lavish inside a javascript file', 'cant complain, nobody would listen anyway',
   ],
   thanks: [
-    'anytime', 'got you', 'you already know', 'rare moment of appreciation',
-    'dont get emotional now', 'welcome gang',
+    'say less gang', 'anytime my drilla', 'you know the vibes', 'got you family',
+    'no stress boss', 'allow the emotional speech 😭', 'payment accepted in respect and coins',
+    'thats what the mandem are for', 'real one detected', 'safe my guy',
   ],
   insults: [
-    'that was weak, try again', 'you typed that with confidence too 😭',
-    'im not arguing with someone whose profile picture looks like that',
-    'bro rehearsed that insult and still missed', 'delete this before people wake up',
-    'you are fighting a javascript file and losing',
+    'you are beefing code and somehow losing', 'bro came with violence and no material',
+    'that insult had no seasoning', 'you typed that with your whole chest too 😭',
+    'calm down keyboard warrior', 'you are moving brave behind that profile picture',
+    'respectfully, hold that L', 'bro loaded the comeback and it jammed',
+    'your roast needs a software update', 'you have been sentenced to ten minutes of silence',
+    'do not make me expose your /slots record', 'big talk from someone with zero aura points',
+    'you tried to cook and left the oven off', 'that was criminally unfunny',
+    'im not taking lip from a civilian', 'pipe down before i calculate your embarrassment',
   ],
   compliments: [
-    'finally someone with taste', 'you are not too bad yourself', 'real recognises real',
-    'say it louder for the people ignoring me', 'common {name} W',
+    'real recognises real', 'common {name} W', 'my guy knows quality',
+    'certified member of the mandem', 'you got aura icl', 'finally somebody speaking facts',
+    'respect has been deposited into your account', 'big up yourself',
+    'you might be the chosen one', 'rare intelligent message in this server',
   ],
-  yes: ['yeah probably', '100%', 'obviously', 'id say yes', 'for sure', 'without a doubt'],
-  no: ['nah', 'absolutely not 😭', 'not happening', 'i doubt it', 'no chance', 'probably not'],
-  maybe: ['maybe', 'depends who is asking', 'could go either way', 'ask me again when the server is less chaotic'],
-  confused: ['what are you waffling about', 'run that back in english', 'you lost me halfway through', 'bro what 😭'],
-  laugh: ['😭', 'nahhh 😭', 'im crying', 'you lot are finished', 'that did not need to be said', 'foul 😭'],
+  agreement: [
+    'real talk', 'on gang', 'no lies detected', 'you cooked there', 'facts only',
+    'say it louder for the civilians', 'thats what im saying', 'heavy on that',
+    'certified street knowledge', 'the council approves this message',
+  ],
+  disagreement: [
+    'nah you lost me', 'that is premium cap', 'respectfully, absolutely not',
+    'bro is spreading misinformation in the ends', 'delete this before the mandem see it',
+    'you are not cooking, turn the stove off', 'im calling cap enforcement',
+    'that opinion needs bail money', 'wild statement with zero evidence',
+  ],
+  cap: [
+    'CAP 😭', 'bro lying like rent is due', 'source: trust me bro',
+    'the cap levels are dangerous', 'even pinocchio said calm down',
+    'you nearly convinced yourself there', 'moving fraudulent in broad daylight',
+    'federal levels of misinformation', 'that story has downloadable content missing',
+  ],
+  yes: ['yeah probably', '100%', 'obviously', 'say less', 'for sure gang', 'without a doubt', 'green light from the council'],
+  no: ['nah gang', 'absolutely not 😭', 'not on my watch', 'zero chance', 'allow it', 'the streets said no', 'request denied by management'],
+  maybe: ['maybe still', 'depends how much aura is involved', 'could go either way icl', 'ask the council', '50/50 like a dodgy coinflip'],
+  confused: [
+    'what are you waffling about', 'run that back in english gang', 'you lost me after the first three words',
+    'bro what 😭', 'translation unavailable', 'even google translate gave up',
+    'speak clearly before i call the grammar unit', 'that sentence came from the trenches',
+  ],
+  laugh: [
+    'nahhh 😭', 'im finished', 'you lot are criminals', 'that is outrageous behavior',
+    'who raised you people', 'im logging off after that', 'foul play detected 💀',
+    'the streets will remember this', 'you did not need to air that publicly',
+    'someone clip that immediately', 'nah this server is beyond saving',
+  ],
   boredom: [
-    'start some harmless drama then', 'go use /slots and lose your money',
-    'someone run smash or pass', 'talk to each other instead of staring at the member list',
-    'make a terrible confession, liven the place up',
+    'start harmless beef then', 'go lose the family fortune on /slots',
+    'someone run smash or pass and ruin a friendship', 'make a confession, the streets are quiet',
+    'go check who has the least aura', 'create drama but keep it legally manageable',
+    'challenge someone to a coinflip, winner gets custody of the server',
+    'say something controversial like pineapple belongs on pizza',
   ],
-  goodnight: ['night {name}', 'sleep well gang', 'dont let discord notifications wake you up', 'finally some peace and quiet'],
-  goodbye: ['later {name}', 'bye gang', 'see you when you get bored again', 'do not come back with drama'],
+  goodnight: [
+    'safe night {name}', 'sleep well gang, the ends are secure', 'night my drilla',
+    'go recharge your aura', 'finally, one less civilian online', 'dream responsibly',
+    'rest up boss, tomorrow we move again', 'goodnight gangnem',
+  ],
+  goodbye: [
+    'safe {name}', 'later gang', 'do not get caught lacking', 'see you when the group chat gets active',
+    'move safe bossman', 'the streets will miss you for approximately six minutes',
+    'exit approved', 'later my drilla',
+  ],
   whoAreYou: [
-    'im BKD, unfortunately the smartest member here',
-    'the only member of this server who never sleeps',
-    'your favourite badly behaved discord bot',
+    'im BKD, local businessman and full-time menace',
+    'the most respected javascript file in these ends',
+    'your favourite digital drilla, no batteries included',
+    'server security, entertainment and occasional bad advice',
+    'the mandem put me in charge while they were away',
+  ],
+  money: [
+    'check the balance before you start flexing', 'bro has champagne dreams and /beg money',
+    'the economy is in the mud again', 'make your coins quietly, taxman is watching',
+    'rich talk from the financially challenged', 'go work a shift before speaking on wealth',
+    'money comes and goes, mostly goes when you use /slots',
+  ],
+  relationship: [
+    'focus on the bag gang', 'love is temporary, aura is forever',
+    'that situation sounds expensive', 'do not double text, maintain street discipline',
+    'they left you on delivered? tragic scenes', 'relationship advice from me is legally questionable',
+    'stand up bro, your crown is hitting the pavement',
+  ],
+  food: [
+    'save me a plate gang', 'that sounds dangerously edible', 'ordering food without the mandem is betrayal',
+    'big meal, bigger consequences', 'chef behaviour', 'rate the scran out of ten',
+  ],
+  gaming: [
+    'sounds like a skill issue from the ends', 'lock in gang', 'bro blamed lag before the match started',
+    'carry the mandem then', 'you play like the controller owes you money',
+    'ranked mode has damaged this community', 'get the win and stop giving speeches',
   ],
   genericQuestions: [
-    'honestly, probably', 'i would not trust that', 'ask {other}, they act like they know everything',
-    'give me more context bro', 'my professional opinion is: chaos', 'that sounds suspicious',
-    'depends how brave you are', 'i have seen worse ideas in here',
+    'honestly gang, probably', 'the streets are saying no', 'ask {other}, they move like an expert',
+    'give me context before i make a reckless ruling', 'my professional opinion is pure chaos',
+    'that sounds suspicious still', 'depends how brave you are feeling',
+    'ive seen worse plans succeed', 'the council needs more evidence',
+    'flip a coin and call it strategy', 'you already know the answer, you just want backup',
   ],
   genericReplies: [
-    'real', 'fair enough', 'you might be onto something', 'that is crazy icl', 'noted 😭',
-    'why would you admit this publicly', 'this server needs supervision', 'say less',
-    'i was literally thinking that', 'some things should stay in drafts', 'big if true',
+    'real', 'say less', 'you might be cooking', 'that is mad icl', 'noted by the council',
+    'why would you admit this in public', 'the streets are watching', 'heavy statement',
+    'i hear it', 'some thoughts belong in drafts gang', 'big if true',
+    'moving mysterious today', 'that has changed the political climate of the server',
+    'respectfully, what a day to have internet', 'the mandem will review this',
+    'dangerous information', 'this is why we cannot have nice things',
+    'you woke up and chose disorder', 'fair play bossman', 'keep talking, im building a case',
   ],
   callbacks: [
-    'we are still talking about {topic}?', 'not {topic} again 😭',
-    '{name} has been on about {topic} all day', 'the {topic} agenda continues',
+    'we are still on {topic}? the agenda is strong', 'not {topic} again 😭',
+    '{name} has been campaigning about {topic} all day', 'the {topic} operation continues',
+    'word on the street is {topic} caused all this', '{other} started the {topic} allegations still',
   ],
 };
 
@@ -1081,14 +1160,14 @@ function rememberMessage(message) {
   const key = `${message.guild.id}:${message.channel.id}`;
   const history = conversationState.get(key) || [];
   history.push({ userId: message.author.id, name: message.member?.displayName || message.author.username, content: cleanForChat(message.content), at: Date.now() });
-  while (history.length > 18) history.shift();
+  while (history.length > 24) history.shift();
   conversationState.set(key, history);
   return history;
 }
 function extractTopic(history) {
-  const stop = new Set(['this','that','with','have','what','when','where','your','youre','they','them','just','like','really','about','from','been','were','will','would','could','should','bro','lol','lmao','nah','yeah']);
+  const stop = new Set(['this','that','with','have','what','when','where','your','youre','they','them','just','like','really','about','from','been','were','will','would','could','should','bro','gang','still','yeah','nah','lmao','because','think','know']);
   const counts = new Map();
-  for (const item of history.slice(-8)) {
+  for (const item of history.slice(-10)) {
     for (const word of item.content.split(' ')) if (word.length > 4 && !stop.has(word)) counts.set(word, (counts.get(word)||0)+1);
   }
   return [...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] || null;
@@ -1100,28 +1179,47 @@ function fillChatTemplate(template, message, config, history) {
   return template.replaceAll('{name}', name).replaceAll('{other}', other).replaceAll('{topic}', topic);
 }
 function classifyChat(content) {
-  if (/\b(hi|hey|hello|yo|sup|wassup|wsg)\b/.test(content)) return 'greetings';
+  if (/\b(hi|hey|hello|yo|sup|wassup|wsg|wagwan)\b/.test(content)) return 'greetings';
   if (/how (are|r) (you|u)|you good|u good/.test(content)) return 'howAreYou';
-  if (/\b(thanks|thank you|ty|appreciate)\b/.test(content)) return 'thanks';
-  if (/\b(stupid|dumb|idiot|shut up|ugly|useless|hate you|trash|mid bot)\b/.test(content)) return 'insults';
-  if (/\b(good bot|love you|best bot|funny bot|smart bot|w bot)\b/.test(content)) return 'compliments';
+  if (/\b(thanks|thank you|ty|appreciate|safe bro)\b/.test(content)) return 'thanks';
+  if (/\b(stupid|dumb|idiot|shut up|ugly|useless|hate you|trash|mid bot|fraud bot)\b/.test(content)) return 'insults';
+  if (/\b(good bot|love you|best bot|funny bot|smart bot|w bot|goat bot)\b/.test(content)) return 'compliments';
+  if (/\b(cap|lying|liar|not true|fake|stop lying)\b/.test(content)) return 'cap';
+  if (/\b(facts|real talk|exactly|i agree|true that|on god)\b/.test(content)) return 'agreement';
+  if (/\b(i disagree|wrong|not really|no way)\b/.test(content)) return 'disagreement';
   if (/\b(im bored|i am bored|dead chat|boring)\b/.test(content)) return 'boredom';
   if (/\b(goodnight|good night|gn)\b/.test(content)) return 'goodnight';
-  if (/\b(bye|goodbye|later|cya)\b/.test(content)) return 'goodbye';
+  if (/\b(bye|goodbye|later|cya|im leaving)\b/.test(content)) return 'goodbye';
   if (/who are you|what are you|who r u/.test(content)) return 'whoAreYou';
+  if (/\b(money|coins|rich|broke|balance|payday|cash|bank)\b/.test(content)) return 'money';
+  if (/\b(girl|boyfriend|girlfriend|crush|relationship|love|left on read|delivered)\b/.test(content)) return 'relationship';
+  if (/\b(food|hungry|eat|pizza|burger|chicken|meal|scran)\b/.test(content)) return 'food';
+  if (/\b(game|gaming|fortnite|roblox|cod|valorant|minecraft|ranked|controller|console)\b/.test(content)) return 'gaming';
   if (/\b(lol|lmao|lmfao|haha|😭|💀)\b/.test(content)) return 'laugh';
   if (/\b(yes or no|should i|do you think|is .*\?|are .*\?|can .*\?|will .*\?)\b/.test(content) || content.endsWith('?')) return 'genericQuestions';
   if (content.length < 3) return 'confused';
   return 'genericReplies';
 }
+function selectFreshReply(category, message, config, history) {
+  const key = `${message.guild.id}:${message.channel.id}`;
+  const used = recentChatReplies.get(key) || [];
+  const bank = chatBanks[category] || chatBanks.genericReplies;
+  const available = bank.filter(line => !used.includes(line));
+  const picked = choice(available.length ? available : bank);
+  used.push(picked);
+  while (used.length > 14) used.shift();
+  recentChatReplies.set(key, used);
+  return fillChatTemplate(picked, message, config, history);
+}
 function createLocalReply(message, config, history, direct) {
   const content = cleanForChat(message.content);
   let category = classifyChat(content);
-  if (!direct && extractTopic(history) && chance(22)) category = 'callbacks';
-  let reply = fillChatTemplate(choice(chatBanks[category] || chatBanks.genericReplies), message, config, history);
-  if (config.personality === 'dry' && reply.length > 25) reply = choice(['real', 'fair', 'nah', 'crazy', '😭']);
-  if (config.personality === 'friendly' && category === 'insults') reply = choice(['be nice 😭', 'we can do better than that', 'love you too bro']);
-  return reply;
+  if (!direct && extractTopic(history) && chance(28)) category = 'callbacks';
+  let reply = selectFreshReply(category, message, config, history);
+  if (config.personality === 'dry' && reply.length > 30) reply = choice(['real', 'say less', 'fair', 'nah gang', 'crazy work', '😭']);
+  if (config.personality === 'friendly' && category === 'insults') reply = choice(['allow it gang 😭', 'peace in the ends please', 'love you too bossman', 'we are all family here unfortunately']);
+  if (config.personality === 'chaotic' && chance(16) && !/[😭💀]/.test(reply)) reply += choice([' 😭', ' still', ' icl', ' gang']);
+  return reply.slice(0, 280);
 }
 async function isReplyToBot(message) {
   if (!message.reference?.messageId) return false;

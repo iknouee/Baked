@@ -71,6 +71,7 @@ const defaultData = {
   replies: [],
   economy: {},
   chatbot: {},
+  moderation: { warnings: {} },
 };
 
 function cloneDefaultData() {
@@ -80,6 +81,7 @@ function cloneDefaultData() {
     replies: [],
     economy: {},
     chatbot: {},
+    moderation: { warnings: {} },
   };
 }
 
@@ -120,6 +122,14 @@ function loadData() {
 
     if (!parsedData.chatbot || typeof parsedData.chatbot !== 'object') {
       parsedData.chatbot = {};
+    }
+
+    if (!parsedData.moderation || typeof parsedData.moderation !== 'object') {
+      parsedData.moderation = { warnings: {} };
+    }
+
+    if (!parsedData.moderation.warnings || typeof parsedData.moderation.warnings !== 'object') {
+      parsedData.moderation.warnings = {};
     }
 
     return parsedData;
@@ -1473,13 +1483,224 @@ client.once('ready', () => {
 });
 
 // ======================================================
+// AUTOMATIC MODERATION
+// ======================================================
+
+const moderationActivity = new Map();
+const moderationLocks = new Set();
+
+// Regular swearing such as "fuck" is intentionally not included.
+// Add or remove entries here to match your server rules.
+const severeWordPatterns = [
+  /\bn+[i1!|]+g+[e3a@]+r+s?\b/i,
+  /\bn+[i1!|]+g+[gq]+[a@4]+s?\b/i,
+  /\bf+[a@4]+g+[gq]*(?:o+t+)?s?\b/i,
+  /\bk+[i1!|]+k+[e3]+s?\b/i,
+  /\bch+[i1!|]+n+k+s?\b/i,
+  /\bsp+[i1!|]+c+s?\b/i,
+  /\btr+[a@4]+nn(?:y|ies)\b/i,
+  /\br+[e3]+t+[a@4]+rd(?:ed|s)?\b/i,
+  /\bwh+[o0]+r+[e3]+s?\b/i,
+  /\bh+[o0]+e+s?\b/i,
+  /\bsl+[u*]+t+s?\b/i,
+];
+
+function normaliseModerationText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[`_*~|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function containsSevereLanguage(content) {
+  const clean = normaliseModerationText(content);
+  return severeWordPatterns.some((pattern) => pattern.test(clean));
+}
+
+function warningKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+function addModerationWarning(data, message, reason) {
+  const key = warningKey(message.guild.id, message.author.id);
+  const current = data.moderation.warnings[key] || { count: 0, history: [] };
+  current.count += 1;
+  current.history.push({ reason, at: Date.now(), channelId: message.channel.id });
+  current.history = current.history.slice(-20);
+  data.moderation.warnings[key] = current;
+  saveData(data);
+  return current.count;
+}
+
+async function sendModerationNotice(message, reason, warningCount) {
+  const notice = await message.channel.send({
+    content: `⚠️ ${message.author}, your message was removed. **Reason:** ${reason}\nWarning **#${warningCount}**.`,
+    allowedMentions: { users: [message.author.id], roles: [], repliedUser: false },
+  }).catch(() => null);
+
+  if (notice) {
+    setTimeout(() => notice.delete().catch(() => {}), 10_000).unref?.();
+  }
+}
+
+async function deleteMessagesSafely(messages) {
+  const unique = [...new Map(messages.filter(Boolean).map((m) => [m.id, m])).values()];
+  if (!unique.length) return;
+
+  const byChannel = new Map();
+  for (const msg of unique) {
+    const list = byChannel.get(msg.channel.id) || [];
+    list.push(msg);
+    byChannel.set(msg.channel.id, list);
+  }
+
+  for (const list of byChannel.values()) {
+    const channel = list[0].channel;
+    if (list.length > 1 && channel.bulkDelete) {
+      await channel.bulkDelete(list, true).catch(async () => {
+        for (const msg of list) await msg.delete().catch(() => {});
+      });
+    } else {
+      await list[0].delete().catch(() => {});
+    }
+  }
+}
+
+function getSpamResult(message) {
+  const key = `${message.guild.id}:${message.author.id}`;
+  const now = Date.now();
+  const content = normaliseModerationText(message.content).toLowerCase();
+  const history = (moderationActivity.get(key) || []).filter((item) => now - item.at < 15_000);
+
+  history.push({
+    at: now,
+    content,
+    message,
+  });
+  moderationActivity.set(key, history);
+
+  const rapid = history.filter((item) => now - item.at < 7_000);
+  const duplicates = content
+    ? history.filter((item) => now - item.at < 12_000 && item.content === content)
+    : [];
+  const excessiveMentions = message.mentions.users.size + message.mentions.roles.size >= 6;
+
+  if (rapid.length >= 7) {
+    return { reason: 'Message spam', messages: rapid.map((item) => item.message) };
+  }
+  if (duplicates.length >= 3) {
+    return { reason: 'Repeated-message spam', messages: duplicates.map((item) => item.message) };
+  }
+  if (excessiveMentions) {
+    return { reason: 'Mention spam', messages: [message] };
+  }
+  return null;
+}
+
+async function imageLooksNsfw(url) {
+  const apiUser = process.env.SIGHTENGINE_API_USER;
+  const apiSecret = process.env.SIGHTENGINE_API_SECRET;
+  if (!apiUser || !apiSecret) return false;
+
+  try {
+    const form = new FormData();
+    form.append('url', url);
+    form.append('models', 'nudity-2.1');
+    form.append('api_user', apiUser);
+    form.append('api_secret', apiSecret);
+
+    const response = await fetch('https://api.sightengine.com/1.0/check.json', {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    const nudity = result.nudity || {};
+    const sexual = Number(nudity.sexual_activity || 0);
+    const explicit = Number(nudity.sexual_display || 0);
+    const erotica = Number(nudity.erotica || 0);
+    const verySuggestive = Number(nudity.very_suggestive || 0);
+    return sexual >= 0.55 || explicit >= 0.55 || erotica >= 0.72 || verySuggestive >= 0.82;
+  } catch (error) {
+    console.error('NSFW image scan failed:', error.message);
+    return false;
+  }
+}
+
+async function containsNsfwImage(message) {
+  const images = [...message.attachments.values()].filter((attachment) =>
+    attachment.contentType?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(attachment.name || '')
+  );
+
+  for (const image of images.slice(0, 4)) {
+    if (await imageLooksNsfw(image.url)) return true;
+  }
+  return false;
+}
+
+async function moderateMessage(message, data) {
+  const lockKey = `${message.guild.id}:${message.author.id}`;
+  if (moderationLocks.has(lockKey)) return true;
+
+  if (containsSevereLanguage(message.content)) {
+    moderationLocks.add(lockKey);
+    try {
+      await deleteMessagesSafely([message]);
+      const count = addModerationWarning(data, message, 'Severe or hateful language');
+      await sendModerationNotice(message, 'Severe or hateful language', count);
+    } finally {
+      setTimeout(() => moderationLocks.delete(lockKey), 1500).unref?.();
+    }
+    return true;
+  }
+
+  const spam = getSpamResult(message);
+  if (spam) {
+    moderationLocks.add(lockKey);
+    try {
+      await deleteMessagesSafely(spam.messages);
+      moderationActivity.delete(lockKey);
+      const count = addModerationWarning(data, message, spam.reason);
+      await sendModerationNotice(message, spam.reason, count);
+    } finally {
+      setTimeout(() => moderationLocks.delete(lockKey), 2500).unref?.();
+    }
+    return true;
+  }
+
+  if (message.attachments.size > 0 && await containsNsfwImage(message)) {
+    moderationLocks.add(lockKey);
+    try {
+      await deleteMessagesSafely([message]);
+      const count = addModerationWarning(data, message, 'NSFW image');
+      await sendModerationNotice(message, 'NSFW images are not allowed', count);
+    } finally {
+      setTimeout(() => moderationLocks.delete(lockKey), 1500).unref?.();
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// ======================================================
 // MESSAGE AUTO-REPLIES
 // ======================================================
 
 client.on('messageCreate', async (message) => {
-  if (!message.guild || message.author.bot || !message.content?.trim()) return;
+  if (!message.guild || message.author.bot) return;
+  if (!message.content?.trim() && message.attachments.size === 0) return;
   try {
     const data = loadData();
+
+    if (await moderateMessage(message, data)) return;
+
+    // Attachment-only messages have nothing to auto-reply to.
+    if (!message.content?.trim()) return;
+
     const guildReplies = data.replies.filter(reply => reply.guildId === message.guild.id);
     for (const replyRule of guildReplies) {
       if (!triggerMatches(message.content, replyRule)) continue;

@@ -1566,41 +1566,7 @@ const moderationSettings = {
 // slurs, hateful language and degrading sexual harassment. Server-specific
 // entries can also be added to
 // moderation-extra-words.json as plain strings (one JSON array).
-const severeWordPatterns = [
-  /\bn+[i1!|l]+g+[e3a@]+r+s?\b/i,
-  /\bn+[i1!|l]+g+[gq]+[a@4]+s?\b/i,
-  /\bf+[a@4]+g+[gq]*(?:[o0]+t+)?s?\b/i,
-  /\bk+[i1!|l]+k+[e3]+s?\b/i,
-  /\bch+[i1!|l]+n+k+s?\b/i,
-  /\bsp+[i1!|l]+c+s?\b/i,
-  /\bg+[o0]+[o0]+k+s?\b/i,
-  /\btr+[a@4]+nn(?:y|ies)\b/i,
-  /\br+[e3]+t+[a@4]+rd(?:ed|s)?\b/i,
-  /\bd+[y]+k+[e3]+s?\b/i,
-  /\bc+[o0]+[o0]+n+s?\b/i,
-  /\bw+[e3]+tb+[a@4]+ck+s?\b/i,
-  /\bs+[a@4]+nd+n+[i1!|l]+g+[gq]+[e3]+r+s?\b/i,
-  /\bc+[a@4]+m+[e3]+l+j+[o0]+ck+[e3]+y+s?\b/i,
-  /\br+[a@4]+g+h+[e3]+[a@4]+d+s?\b/i,
-  /\bp+[a@4]+k+[i1!|l]+s?\b/i,
-  /\bch+[i1!|l]+n+[a@4]+m+[a@4]+n+s?\b/i,
-  /\bk+[y]+k+[e3]+s?\b/i,
-  /\bh+[e3]+b+[e3]+s?\b/i,
-  /\bt+[o0]+w+[e3]+lh+[e3]+[a@4]+d+s?\b/i,
-  /\bwh+[o0]+r+[e3]+s?\b/i,
-  /\bh+[o0]+e+s?\b/i,
-  /\bh+[o0]+s?\b/i,
-  /\bm+[e3]+n+\b/i,
-  /\bsl+[u*]+t+s?\b/i,
-  /\bth+[o0]+t+s?\b/i,
-  /\bc+[u*]+nt+s?\b/i,
-  /\btr+[a@4]+sh+y+\b/i,
-  /\bsh+[e3]+m+[a@4]+l+[e3]+s?\b/i,
-  /\btr+[a@4]+p+s?\b/i,
-  /\bm+[o0]+ng+[o0]+l+[o0]+[i1!|l]+d+s?\b/i,
-  /\bcr+[i1!|l]+p+pl+[e3]+s?\b/i,
-  /\bsp+[a@4]+st+[i1!|l]+c+s?\b/i,
-];
+const severeWordPatterns = [];
 
 const extraWordFile = path.join(__dirname, 'moderation-extra-words.json');
 let cachedExtraWords = { mtime: 0, patterns: [] };
@@ -1675,8 +1641,7 @@ function containsSevereLanguage(content, data, guildId) {
     pattern.lastIndex = 0;
     return pattern.test(spaced) || pattern.test(compact);
   });
-  if (builtInMatch) return true;
-  return getGuildBlacklist(data, guildId).some(word => blacklistWordMatches(content, word));
+  return false;
 }
 
 function warningKey(guildId, userId) { return `${guildId}:${userId}`; }

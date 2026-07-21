@@ -1665,23 +1665,43 @@ function addModerationWarning(data, message, reason) {
   return current.count;
 }
 
+function safeLogText(value, maximum = 1000) {
+  const text = String(value || '')
+    .replace(/@everyone/g, '@\u200beveryone')
+    .replace(/@here/g, '@\u200bhere')
+    .replace(/<@&?(\d+)>/g, '<@\u200b$1>')
+    .replace(/`/g, 'ˋ')
+    .trim();
+  if (!text) return '*No text content.*';
+  return text.length > maximum ? `${text.slice(0, maximum - 1)}…` : text;
+}
+
 async function sendModLog(guild, payload) {
   const channelId = process.env.MOD_LOG_CHANNEL_ID;
   if (!channelId) return;
   const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased()) return;
+
+  const fields = [
+    ...(payload.user ? [{ name: 'Member', value: `${payload.user} (\`${payload.user.id}\`)`, inline: true }] : []),
+    ...(payload.channel ? [{ name: 'Channel', value: `${payload.channel}`, inline: true }] : []),
+    ...(payload.warningCount ? [{ name: 'Warnings', value: `\`${payload.warningCount}\``, inline: true }] : []),
+    ...(payload.messageContent !== undefined ? [{ name: 'Message deleted', value: `\`\`\`\n${safeLogText(payload.messageContent)}\n\`\`\``, inline: false }] : []),
+    ...(payload.attachments?.length ? [{ name: 'Attachments', value: safeLogText(payload.attachments.join('\n'), 1000), inline: false }] : []),
+    ...(payload.messageCount > 1 ? [{ name: 'Messages removed', value: `\`${payload.messageCount}\``, inline: true }] : []),
+  ];
+
   const embed = new EmbedBuilder()
     .setColor(payload.color || 0xed4245)
     .setAuthor({ name: 'BKD • AUTOMOD' })
     .setTitle(payload.title || 'Moderation action')
     .setDescription(payload.description || 'No details provided.')
-    .addFields(
-      ...(payload.user ? [{ name: 'Member', value: `${payload.user} (\`${payload.user.id}\`)`, inline: true }] : []),
-      ...(payload.channel ? [{ name: 'Channel', value: `${payload.channel}`, inline: true }] : []),
-      ...(payload.warningCount ? [{ name: 'Warnings', value: `\`${payload.warningCount}\``, inline: true }] : [])
-    )
+    .addFields(fields)
     .setTimestamp();
-  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {});
+
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(error => {
+    console.error('Failed to send moderation log:', error.message);
+  });
 }
 
 async function applyWarningEscalation(message, warningCount, reason) {
@@ -1817,6 +1837,16 @@ async function punishAndLog(message, data, reason, messages = [message]) {
   if (moderationLocks.has(lockKey)) return true;
   moderationLocks.add(lockKey);
   try {
+    // Capture evidence before Discord deletes the messages.
+    const evidenceMessages = [...new Map(messages.filter(Boolean).map(msg => [msg.id, msg])).values()];
+    const messageContent = evidenceMessages
+      .slice(-8)
+      .map(msg => `${msg.author?.username || 'Unknown'}: ${msg.content?.trim() || '[attachment/no text]'}`)
+      .join('\n');
+    const attachments = evidenceMessages
+      .flatMap(msg => [...(msg.attachments?.values?.() || [])].map(file => `${file.name || 'attachment'} — ${file.url}`))
+      .slice(0, 8);
+
     const deletableMessages = messages.filter(msg => msg?.deletable !== false);
     if (deletableMessages.length === 0) {
       console.error('AUTOMOD: Cannot delete messages. Give the bot Manage Messages and place its role correctly.');
@@ -1829,7 +1859,12 @@ async function punishAndLog(message, data, reason, messages = [message]) {
     await sendModLog(message.guild, {
       title: 'Automatic moderation action',
       description: `**Reason:** ${reason}\n**Action:** ${action}`,
-      user: message.author, channel: message.channel, warningCount: count,
+      user: message.author,
+      channel: message.channel,
+      warningCount: count,
+      messageContent,
+      attachments,
+      messageCount: evidenceMessages.length,
     });
   } finally {
     setTimeout(() => moderationLocks.delete(lockKey), 2500).unref?.();

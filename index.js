@@ -1721,15 +1721,12 @@ async function applyWarningEscalation(message, warningCount, reason) {
   return action;
 }
 
-async function sendModerationNotice(message, reason, warningCount, action) {
-  const notice = await message.channel.send({
-    content: `⚠️ ${message.author}, your message was removed. **Reason:** ${reason}\nWarning **#${warningCount}** • ${action}.`,
-    allowedMentions: { users: [message.author.id], roles: [], repliedUser: false },
-  }).catch(() => null);
-  if (notice) setTimeout(() => notice.delete().catch(() => {}), moderationSettings.noticeDeleteMs).unref?.();
+async function sendModerationNotice() {
+  return;
 }
 
 async function deleteMessagesSafely(messages) {
+  return [];
   const unique = [...new Map(messages.filter(Boolean).map(m => [m.id, m])).values()];
   const groups = new Map();
   for (const msg of unique) {

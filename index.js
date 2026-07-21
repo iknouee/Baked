@@ -1384,6 +1384,16 @@ const commands = [
 
 
   new SlashCommandBuilder()
+    .setName('warnings')
+    .setDescription('Shows the moderation warnings for a member')
+    .addUserOption(option => option
+      .setName('user')
+      .setDescription('Member whose warnings you want to view')
+      .setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
     .setName('blacklist')
     .setDescription("Manage this server's blocked words")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -1484,10 +1494,27 @@ async function registerCommands() {
   console.log('Registering application commands...');
 
   if (guildId) {
+    // Remove stale global commands so Discord does not show every command twice.
+    await rest.put(Routes.applicationCommands(clientId), { body: [] });
+    console.log('Cleared old global application commands.');
+
+    // Defensively remove accidental duplicate command definitions before deployment.
+    const uniqueCommands = [];
+    const seenCommandKeys = new Set();
+    for (const command of commands) {
+      const key = `${command.type || 1}:${command.name}`;
+      if (seenCommandKeys.has(key)) {
+        console.warn(`Skipped duplicate command definition: ${command.name}`);
+        continue;
+      }
+      seenCommandKeys.add(key);
+      uniqueCommands.push(command);
+    }
+
     await rest.put(
       Routes.applicationGuildCommands(clientId, guildId),
       {
-        body: commands,
+        body: uniqueCommands,
       }
     );
 
@@ -2154,6 +2181,37 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
+      return;
+    }
+
+    if (interaction.commandName === 'warnings') {
+      const target = interaction.options.getUser('user', true);
+      const data = loadData();
+      const record = data.moderation?.warnings?.[warningKey(interaction.guildId, target.id)] || { count: 0, history: [] };
+      const history = Array.isArray(record.history) ? record.history.slice(-10).reverse() : [];
+
+      const historyText = history.length
+        ? history.map((entry, index) => {
+            const timestamp = entry.at ? `<t:${Math.floor(entry.at / 1000)}:R>` : 'Unknown time';
+            const channel = entry.channelId ? `<#${entry.channelId}>` : 'Unknown channel';
+            return `**${index + 1}. ${safeLogText(entry.reason || 'Automod warning', 120)}**\n${channel} • ${timestamp}`;
+          }).join('\n\n').slice(0, 3900)
+        : '*This member has no saved warnings.*';
+
+      const embed = new EmbedBuilder()
+        .setColor(record.count > 0 ? 0xed4245 : 0x57f287)
+        .setAuthor({
+          name: 'BKD • MODERATION WARNINGS',
+          iconURL: target.displayAvatarURL({ extension: 'png', size: 128 }),
+        })
+        .setTitle(`${target.username}'s warnings`)
+        .setDescription(historyText)
+        .addFields({ name: 'Total warnings', value: `\`${Number(record.count) || 0}\``, inline: true })
+        .setThumbnail(target.displayAvatarURL({ extension: 'png', size: 256 }))
+        .setFooter({ text: `User ID: ${target.id} • Showing the latest ${history.length} warning${history.length === 1 ? '' : 's'}` })
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       return;
     }
 

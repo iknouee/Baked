@@ -48,6 +48,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -1488,113 +1489,238 @@ client.once('ready', () => {
 
 const moderationActivity = new Map();
 const moderationLocks = new Set();
+const recentGuildJoins = new Map();
 
-// Regular swearing such as "fuck" is intentionally not included.
-// Add or remove entries here to match your server rules.
+const moderationSettings = {
+  noticeDeleteMs: 12_000,
+  rapidWindowMs: 7_000,
+  rapidLimit: 7,
+  duplicateWindowMs: 15_000,
+  duplicateLimit: 3,
+  mentionLimit: 6,
+  capsMinimumLength: 18,
+  capsRatio: 0.82,
+  emojiLimit: 18,
+  lineLimit: 14,
+};
+
+// Ordinary swearing is intentionally allowed. These patterns are for serious
+// slurs, hateful language and degrading sexual harassment. "men" is NOT
+// blocked because it is a normal word. Add server-specific entries to
+// moderation-extra-words.json as plain strings (one JSON array).
 const severeWordPatterns = [
-  /\bn+[i1!|]+g+[e3a@]+r+s?\b/i,
-  /\bn+[i1!|]+g+[gq]+[a@4]+s?\b/i,
-  /\bf+[a@4]+g+[gq]*(?:o+t+)?s?\b/i,
-  /\bk+[i1!|]+k+[e3]+s?\b/i,
-  /\bch+[i1!|]+n+k+s?\b/i,
-  /\bsp+[i1!|]+c+s?\b/i,
+  /\bn+[i1!|l]+g+[e3a@]+r+s?\b/i,
+  /\bn+[i1!|l]+g+[gq]+[a@4]+s?\b/i,
+  /\bf+[a@4]+g+[gq]*(?:[o0]+t+)?s?\b/i,
+  /\bk+[i1!|l]+k+[e3]+s?\b/i,
+  /\bch+[i1!|l]+n+k+s?\b/i,
+  /\bsp+[i1!|l]+c+s?\b/i,
+  /\bg+[o0]+[o0]+k+s?\b/i,
   /\btr+[a@4]+nn(?:y|ies)\b/i,
   /\br+[e3]+t+[a@4]+rd(?:ed|s)?\b/i,
+  /\bd+[y]+k+[e3]+s?\b/i,
+  /\bc+[o0]+[o0]+n+s?\b/i,
+  /\bw+[e3]+tb+[a@4]+ck+s?\b/i,
+  /\bs+[a@4]+nd+n+[i1!|l]+g+[gq]+[e3]+r+s?\b/i,
+  /\bc+[a@4]+m+[e3]+l+j+[o0]+ck+[e3]+y+s?\b/i,
+  /\br+[a@4]+g+h+[e3]+[a@4]+d+s?\b/i,
+  /\bp+[a@4]+k+[i1!|l]+s?\b/i,
+  /\bch+[i1!|l]+n+[a@4]+m+[a@4]+n+s?\b/i,
+  /\bk+[y]+k+[e3]+s?\b/i,
+  /\bh+[e3]+b+[e3]+s?\b/i,
+  /\bt+[o0]+w+[e3]+lh+[e3]+[a@4]+d+s?\b/i,
   /\bwh+[o0]+r+[e3]+s?\b/i,
   /\bh+[o0]+e+s?\b/i,
+  /\bh+[o0]+s?\b/i,
   /\bsl+[u*]+t+s?\b/i,
+  /\bth+[o0]+t+s?\b/i,
+  /\bc+[u*]+nt+s?\b/i,
+  /\btr+[a@4]+sh+y+\b/i,
+  /\bsh+[e3]+m+[a@4]+l+[e3]+s?\b/i,
+  /\btr+[a@4]+p+s?\b/i,
+  /\bm+[o0]+ng+[o0]+l+[o0]+[i1!|l]+d+s?\b/i,
+  /\bcr+[i1!|l]+p+pl+[e3]+s?\b/i,
+  /\bsp+[a@4]+st+[i1!|l]+c+s?\b/i,
 ];
 
-function normaliseModerationText(value) {
-  return String(value || '')
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+const extraWordFile = path.join(__dirname, 'moderation-extra-words.json');
+let cachedExtraWords = { mtime: 0, patterns: [] };
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function loadExtraModerationPatterns() {
+  try {
+    if (!fs.existsSync(extraWordFile)) return [];
+    const stat = fs.statSync(extraWordFile);
+    if (cachedExtraWords.mtime === stat.mtimeMs) return cachedExtraWords.patterns;
+    const values = JSON.parse(fs.readFileSync(extraWordFile, 'utf8'));
+    const patterns = Array.isArray(values)
+      ? values.filter(v => typeof v === 'string' && v.trim()).slice(0, 1000)
+          .map(v => new RegExp(`\\b${escapeRegex(normaliseModerationText(v, true))}\\b`, 'i'))
+      : [];
+    cachedExtraWords = { mtime: stat.mtimeMs, patterns };
+    return patterns;
+  } catch (error) {
+    console.error('Unable to load moderation-extra-words.json:', error.message);
+    return [];
+  }
+}
+
+function normaliseModerationText(value, compact = false) {
+  let text = String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .toLowerCase()
+    .replace(/0/g, 'o').replace(/[1!|]/g, 'i').replace(/3/g, 'e')
+    .replace(/4/g, 'a').replace(/5/g, 's').replace(/7/g, 't').replace(/8/g, 'b')
+    .replace(/@/g, 'a').replace(/\$/g, 's');
+  if (compact) {
+    return text.replace(/[^a-z0-9]+/g, '').replace(/(.)\1{2,}/g, '$1$1');
+  }
+  return text
     .replace(/[`_*~|]/g, '')
+    .replace(/[^a-z0-9\s'.,!?/:@#-]+/g, ' ')
+    .replace(/(.)\1{3,}/g, '$1$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function containsSevereLanguage(content) {
-  const clean = normaliseModerationText(content);
-  return severeWordPatterns.some((pattern) => pattern.test(clean));
+  const spaced = normaliseModerationText(content);
+  const compact = normaliseModerationText(content, true);
+  return [...severeWordPatterns, ...loadExtraModerationPatterns()].some(pattern => {
+    pattern.lastIndex = 0;
+    return pattern.test(spaced) || pattern.test(compact);
+  });
 }
 
-function warningKey(guildId, userId) {
-  return `${guildId}:${userId}`;
-}
+function warningKey(guildId, userId) { return `${guildId}:${userId}`; }
 
 function addModerationWarning(data, message, reason) {
   const key = warningKey(message.guild.id, message.author.id);
   const current = data.moderation.warnings[key] || { count: 0, history: [] };
   current.count += 1;
-  current.history.push({ reason, at: Date.now(), channelId: message.channel.id });
-  current.history = current.history.slice(-20);
+  current.history.push({ reason, at: Date.now(), channelId: message.channel.id, messageId: message.id });
+  current.history = current.history.slice(-30);
   data.moderation.warnings[key] = current;
   saveData(data);
   return current.count;
 }
 
-async function sendModerationNotice(message, reason, warningCount) {
+async function sendModLog(guild, payload) {
+  const channelId = process.env.MOD_LOG_CHANNEL_ID;
+  if (!channelId) return;
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+  const embed = new EmbedBuilder()
+    .setColor(payload.color || 0xed4245)
+    .setAuthor({ name: 'BKD • AUTOMOD' })
+    .setTitle(payload.title || 'Moderation action')
+    .setDescription(payload.description || 'No details provided.')
+    .addFields(
+      ...(payload.user ? [{ name: 'Member', value: `${payload.user} (\`${payload.user.id}\`)`, inline: true }] : []),
+      ...(payload.channel ? [{ name: 'Channel', value: `${payload.channel}`, inline: true }] : []),
+      ...(payload.warningCount ? [{ name: 'Warnings', value: `\`${payload.warningCount}\``, inline: true }] : [])
+    )
+    .setTimestamp();
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {});
+}
+
+async function applyWarningEscalation(message, warningCount, reason) {
+  const member = message.member;
+  if (!member) return 'Warning recorded';
+  let action = 'Warning recorded';
+  try {
+    if (warningCount === 2 && member.moderatable) {
+      await member.timeout(10 * 60_000, `Automod: ${reason}`);
+      action = 'Timed out for 10 minutes';
+    } else if (warningCount === 3 && member.moderatable) {
+      await member.timeout(60 * 60_000, `Automod: ${reason}`);
+      action = 'Timed out for 1 hour';
+    } else if (warningCount === 4 && member.kickable) {
+      await member.kick(`Automod reached 4 warnings: ${reason}`);
+      action = 'Kicked from the server';
+    } else if (warningCount >= 5 && process.env.MODERATION_AUTO_BAN === 'true' && member.bannable) {
+      await member.ban({ deleteMessageSeconds: 3600, reason: `Automod reached ${warningCount} warnings: ${reason}` });
+      action = 'Banned from the server';
+    }
+  } catch (error) {
+    console.error('Warning escalation failed:', error.message);
+    action = 'Warning recorded (punishment failed — check bot role position)';
+  }
+  return action;
+}
+
+async function sendModerationNotice(message, reason, warningCount, action) {
   const notice = await message.channel.send({
-    content: `⚠️ ${message.author}, your message was removed. **Reason:** ${reason}\nWarning **#${warningCount}**.`,
+    content: `⚠️ ${message.author}, your message was removed. **Reason:** ${reason}\nWarning **#${warningCount}** • ${action}.`,
     allowedMentions: { users: [message.author.id], roles: [], repliedUser: false },
   }).catch(() => null);
-
-  if (notice) {
-    setTimeout(() => notice.delete().catch(() => {}), 10_000).unref?.();
-  }
+  if (notice) setTimeout(() => notice.delete().catch(() => {}), moderationSettings.noticeDeleteMs).unref?.();
 }
 
 async function deleteMessagesSafely(messages) {
-  const unique = [...new Map(messages.filter(Boolean).map((m) => [m.id, m])).values()];
-  if (!unique.length) return;
-
-  const byChannel = new Map();
+  const unique = [...new Map(messages.filter(Boolean).map(m => [m.id, m])).values()];
+  const groups = new Map();
   for (const msg of unique) {
-    const list = byChannel.get(msg.channel.id) || [];
-    list.push(msg);
-    byChannel.set(msg.channel.id, list);
+    const list = groups.get(msg.channel.id) || [];
+    list.push(msg); groups.set(msg.channel.id, list);
   }
-
-  for (const list of byChannel.values()) {
+  for (const list of groups.values()) {
     const channel = list[0].channel;
     if (list.length > 1 && channel.bulkDelete) {
       await channel.bulkDelete(list, true).catch(async () => {
         for (const msg of list) await msg.delete().catch(() => {});
       });
-    } else {
-      await list[0].delete().catch(() => {});
-    }
+    } else if (list[0]) await list[0].delete().catch(() => {});
   }
 }
 
-function getSpamResult(message) {
+function getMessageRuleViolation(message) {
+  const raw = String(message.content || '');
+  const text = normaliseModerationText(raw);
   const key = `${message.guild.id}:${message.author.id}`;
   const now = Date.now();
-  const content = normaliseModerationText(message.content).toLowerCase();
-  const history = (moderationActivity.get(key) || []).filter((item) => now - item.at < 15_000);
-
-  history.push({
-    at: now,
-    content,
-    message,
-  });
+  const history = (moderationActivity.get(key) || []).filter(item => now - item.at < 20_000);
+  history.push({ at: now, content: text, message });
   moderationActivity.set(key, history);
 
-  const rapid = history.filter((item) => now - item.at < 7_000);
-  const duplicates = content
-    ? history.filter((item) => now - item.at < 12_000 && item.content === content)
-    : [];
-  const excessiveMentions = message.mentions.users.size + message.mentions.roles.size >= 6;
+  const rapid = history.filter(item => now - item.at < moderationSettings.rapidWindowMs);
+  const duplicates = text ? history.filter(item => now - item.at < moderationSettings.duplicateWindowMs && item.content === text) : [];
+  const mentions = message.mentions.users.size + message.mentions.roles.size;
+  const letters = raw.match(/[A-Za-z]/g) || [];
+  const capitals = raw.match(/[A-Z]/g) || [];
+  const emojiCount = (raw.match(/<a?:\w+:\d+>|\p{Extended_Pictographic}/gu) || []).length;
+  const lines = raw.split(/\r?\n/).length;
+  const combiningMarks = (raw.match(/[\u0300-\u036f]/g) || []).length;
 
-  if (rapid.length >= 7) {
-    return { reason: 'Message spam', messages: rapid.map((item) => item.message) };
+  if (rapid.length >= moderationSettings.rapidLimit) return { reason: 'Rapid message spam', messages: rapid.map(x => x.message) };
+  if (duplicates.length >= moderationSettings.duplicateLimit) return { reason: 'Repeated-message spam', messages: duplicates.map(x => x.message) };
+  if (mentions >= moderationSettings.mentionLimit) return { reason: 'Mass mention spam', messages: [message] };
+  if (letters.length >= moderationSettings.capsMinimumLength && capitals.length / letters.length >= moderationSettings.capsRatio) return { reason: 'Excessive capital-letter spam', messages: [message] };
+  if (emojiCount >= moderationSettings.emojiLimit) return { reason: 'Emoji spam', messages: [message] };
+  if (lines >= moderationSettings.lineLimit) return { reason: 'Line-break spam', messages: [message] };
+  if (combiningMarks >= 20) return { reason: 'Zalgo/Unicode spam', messages: [message] };
+
+  const invite = /(?:discord(?:app)?\.com\/invite|discord\.gg)\/[a-z0-9-]+/i.test(raw);
+  if (invite && process.env.ALLOW_DISCORD_INVITES !== 'true' && !message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    return { reason: 'Discord invite links are not allowed', messages: [message] };
   }
-  if (duplicates.length >= 3) {
-    return { reason: 'Repeated-message spam', messages: duplicates.map((item) => item.message) };
-  }
-  if (excessiveMentions) {
-    return { reason: 'Mention spam', messages: [message] };
+
+  const suspicious = /(?:free\s*(?:nitro|boost)|steam\s*gift|claim\s*(?:gift|nitro)|discord\s*gift|verify\s*your\s*account|token\s*grabber|ip\s*logger)/i.test(raw);
+  const hasUrl = /https?:\/\/|www\./i.test(raw);
+  if (suspicious && hasUrl) return { reason: 'Possible scam or phishing link', messages: [message] };
+
+  return null;
+}
+
+function dangerousAttachmentReason(message) {
+  const dangerous = /\.(?:exe|scr|bat|cmd|com|msi|jar|ps1|vbs|js|jse|wsf|hta|apk|dmg|iso|lnk)$/i;
+  for (const attachment of message.attachments.values()) {
+    if (dangerous.test(attachment.name || '')) return 'Potentially dangerous executable attachment';
   }
   return null;
 }
@@ -1603,27 +1729,20 @@ async function imageLooksNsfw(url) {
   const apiUser = process.env.SIGHTENGINE_API_USER;
   const apiSecret = process.env.SIGHTENGINE_API_SECRET;
   if (!apiUser || !apiSecret) return false;
-
   try {
     const form = new FormData();
     form.append('url', url);
     form.append('models', 'nudity-2.1');
     form.append('api_user', apiUser);
     form.append('api_secret', apiSecret);
-
     const response = await fetch('https://api.sightengine.com/1.0/check.json', {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(12_000),
+      method: 'POST', body: form, signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
-    const nudity = result.nudity || {};
-    const sexual = Number(nudity.sexual_activity || 0);
-    const explicit = Number(nudity.sexual_display || 0);
-    const erotica = Number(nudity.erotica || 0);
-    const verySuggestive = Number(nudity.very_suggestive || 0);
-    return sexual >= 0.55 || explicit >= 0.55 || erotica >= 0.72 || verySuggestive >= 0.82;
+    const n = result.nudity || {};
+    return Number(n.sexual_activity || 0) >= 0.45 || Number(n.sexual_display || 0) >= 0.45 ||
+      Number(n.erotica || 0) >= 0.68 || Number(n.very_suggestive || 0) >= 0.78;
   } catch (error) {
     console.error('NSFW image scan failed:', error.message);
     return false;
@@ -1631,60 +1750,83 @@ async function imageLooksNsfw(url) {
 }
 
 async function containsNsfwImage(message) {
-  const images = [...message.attachments.values()].filter((attachment) =>
-    attachment.contentType?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(attachment.name || '')
+  const images = [...message.attachments.values()].filter(a =>
+    a.contentType?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(a.name || '')
   );
-
-  for (const image of images.slice(0, 4)) {
-    if (await imageLooksNsfw(image.url)) return true;
-  }
+  for (const image of images.slice(0, 6)) if (await imageLooksNsfw(image.url)) return true;
   return false;
+}
+
+async function punishAndLog(message, data, reason, messages = [message]) {
+  const lockKey = `${message.guild.id}:${message.author.id}`;
+  if (moderationLocks.has(lockKey)) return true;
+  moderationLocks.add(lockKey);
+  try {
+    await deleteMessagesSafely(messages);
+    moderationActivity.delete(lockKey);
+    const count = addModerationWarning(data, message, reason);
+    const action = await applyWarningEscalation(message, count, reason);
+    await sendModerationNotice(message, reason, count, action);
+    await sendModLog(message.guild, {
+      title: 'Automatic moderation action',
+      description: `**Reason:** ${reason}\n**Action:** ${action}`,
+      user: message.author, channel: message.channel, warningCount: count,
+    });
+  } finally {
+    setTimeout(() => moderationLocks.delete(lockKey), 2500).unref?.();
+  }
+  return true;
 }
 
 async function moderateMessage(message, data) {
-  const lockKey = `${message.guild.id}:${message.author.id}`;
-  if (moderationLocks.has(lockKey)) return true;
-
-  if (containsSevereLanguage(message.content)) {
-    moderationLocks.add(lockKey);
-    try {
-      await deleteMessagesSafely([message]);
-      const count = addModerationWarning(data, message, 'Severe or hateful language');
-      await sendModerationNotice(message, 'Severe or hateful language', count);
-    } finally {
-      setTimeout(() => moderationLocks.delete(lockKey), 1500).unref?.();
-    }
-    return true;
-  }
-
-  const spam = getSpamResult(message);
-  if (spam) {
-    moderationLocks.add(lockKey);
-    try {
-      await deleteMessagesSafely(spam.messages);
-      moderationActivity.delete(lockKey);
-      const count = addModerationWarning(data, message, spam.reason);
-      await sendModerationNotice(message, spam.reason, count);
-    } finally {
-      setTimeout(() => moderationLocks.delete(lockKey), 2500).unref?.();
-    }
-    return true;
-  }
-
+  if (message.member?.permissions.has(PermissionFlagsBits.Administrator)) return false;
+  if (containsSevereLanguage(message.content)) return punishAndLog(message, data, 'Prohibited slur or severe abusive language');
+  const attachmentReason = dangerousAttachmentReason(message);
+  if (attachmentReason) return punishAndLog(message, data, attachmentReason);
+  const violation = getMessageRuleViolation(message);
+  if (violation) return punishAndLog(message, data, violation.reason, violation.messages);
   if (message.attachments.size > 0 && await containsNsfwImage(message)) {
-    moderationLocks.add(lockKey);
-    try {
-      await deleteMessagesSafely([message]);
-      const count = addModerationWarning(data, message, 'NSFW image');
-      await sendModerationNotice(message, 'NSFW images are not allowed', count);
-    } finally {
-      setTimeout(() => moderationLocks.delete(lockKey), 1500).unref?.();
-    }
-    return true;
+    return punishAndLog(message, data, 'NSFW or sexually explicit image');
   }
-
   return false;
 }
+
+// Re-check edited messages so users cannot edit safe text into prohibited text.
+client.on('messageUpdate', async (_oldMessage, newMessage) => {
+  try {
+    if (newMessage.partial) newMessage = await newMessage.fetch();
+    if (!newMessage.guild || newMessage.author?.bot) return;
+    if (!newMessage.content?.trim() && newMessage.attachments.size === 0) return;
+    await moderateMessage(newMessage, loadData());
+  } catch (error) { console.error('Edited-message moderation error:', error); }
+});
+
+// Basic anti-raid detection. Set RAID_QUARANTINE_ROLE_ID to automatically
+// place very new accounts into a restricted role during a join spike.
+client.on('guildMemberAdd', async member => {
+  const now = Date.now();
+  const joins = (recentGuildJoins.get(member.guild.id) || []).filter(t => now - t < 20_000);
+  joins.push(now); recentGuildJoins.set(member.guild.id, joins);
+  const accountAge = now - member.user.createdTimestamp;
+  const raidDetected = joins.length >= 8;
+  const veryNew = accountAge < 3 * 24 * 60 * 60_000;
+  if (!raidDetected) return;
+  let action = 'Raid spike detected';
+  const quarantineRoleId = process.env.RAID_QUARANTINE_ROLE_ID;
+  if (veryNew && quarantineRoleId) {
+    const role = member.guild.roles.cache.get(quarantineRoleId);
+    if (role && member.manageable) {
+      await member.roles.add(role, 'Automod raid quarantine').catch(() => {});
+      action = 'Very new account quarantined during join spike';
+    }
+  }
+  await sendModLog(member.guild, {
+    title: 'Possible raid detected',
+    description: `${joins.length} members joined within 20 seconds.\n**Action:** ${action}`,
+    user: member.user,
+    color: 0xfee75c,
+  });
+});
 
 // ======================================================
 // MESSAGE AUTO-REPLIES

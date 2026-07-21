@@ -49,7 +49,6 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -73,7 +72,7 @@ const defaultData = {
   replies: [],
   economy: {},
   chatbot: {},
-  moderation: { warnings: {} },
+  moderation: { warnings: {}, blacklists: {} },
 };
 
 function cloneDefaultData() {
@@ -83,7 +82,7 @@ function cloneDefaultData() {
     replies: [],
     economy: {},
     chatbot: {},
-    moderation: { warnings: {} },
+    moderation: { warnings: {}, blacklists: {} },
   };
 }
 
@@ -127,11 +126,15 @@ function loadData() {
     }
 
     if (!parsedData.moderation || typeof parsedData.moderation !== 'object') {
-      parsedData.moderation = { warnings: {} };
+      parsedData.moderation = { warnings: {}, blacklists: {} };
     }
 
     if (!parsedData.moderation.warnings || typeof parsedData.moderation.warnings !== 'object') {
       parsedData.moderation.warnings = {};
+    }
+
+    if (!parsedData.moderation.blacklists || typeof parsedData.moderation.blacklists !== 'object') {
+      parsedData.moderation.blacklists = {};
     }
 
     return parsedData;
@@ -1380,6 +1383,32 @@ const commands = [
     .setDMPermission(false),
 
 
+  new SlashCommandBuilder()
+    .setName('blacklist')
+    .setDescription("Manage this server's blocked words")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false)
+    .addSubcommand(o => o
+      .setName('add')
+      .setDescription('Add a word or phrase to the blacklist')
+      .addStringOption(v => v
+        .setName('word')
+        .setDescription('Word or phrase to block')
+        .setMinLength(1)
+        .setMaxLength(80)
+        .setRequired(true)))
+    .addSubcommand(o => o
+      .setName('remove')
+      .setDescription('Remove a word or phrase from the blacklist')
+      .addStringOption(v => v
+        .setName('word')
+        .setDescription('Word or phrase to remove')
+        .setAutocomplete(true)
+        .setRequired(true)))
+    .addSubcommand(o => o
+      .setName('list')
+      .setDescription('Show all blacklisted words')),
+
   new SlashCommandBuilder().setName('help').setDescription('Shows the BKD economy command guide').setDMPermission(false),
   new SlashCommandBuilder().setName('economy').setDescription('Shows the BKD economy command guide').setDMPermission(false),
   new SlashCommandBuilder().setName('balance').setDescription('Shows a user balance').addUserOption(o=>o.setName('user').setDescription('User to check')).setDMPermission(false),
@@ -1591,13 +1620,36 @@ function normaliseModerationText(value, compact = false) {
     .trim();
 }
 
-function containsSevereLanguage(content) {
+function getGuildBlacklist(data, guildId) {
+  data.moderation ||= { warnings: {}, blacklists: {} };
+  data.moderation.blacklists ||= {};
+  if (!Array.isArray(data.moderation.blacklists[guildId])) {
+    data.moderation.blacklists[guildId] = [];
+  }
+  return data.moderation.blacklists[guildId];
+}
+
+function blacklistWordMatches(content, word) {
   const spaced = normaliseModerationText(content);
   const compact = normaliseModerationText(content, true);
-  return [...severeWordPatterns, ...loadExtraModerationPatterns()].some(pattern => {
+  const wordSpaced = normaliseModerationText(word);
+  const wordCompact = normaliseModerationText(word, true);
+  if (!wordCompact) return false;
+
+  const spacedPattern = new RegExp(`(^|[^a-z0-9])${escapeRegex(wordSpaced)}([^a-z0-9]|$)`, 'i');
+  const compactPattern = new RegExp(`(^|[^a-z0-9])${escapeRegex(wordCompact)}([^a-z0-9]|$)`, 'i');
+  return spacedPattern.test(spaced) || compactPattern.test(compact);
+}
+
+function containsSevereLanguage(content, data, guildId) {
+  const spaced = normaliseModerationText(content);
+  const compact = normaliseModerationText(content, true);
+  const builtInMatch = [...severeWordPatterns, ...loadExtraModerationPatterns()].some(pattern => {
     pattern.lastIndex = 0;
     return pattern.test(spaced) || pattern.test(compact);
   });
+  if (builtInMatch) return true;
+  return getGuildBlacklist(data, guildId).some(word => blacklistWordMatches(content, word));
 }
 
 function warningKey(guildId, userId) { return `${guildId}:${userId}`; }
@@ -1795,7 +1847,7 @@ function memberBypassesModeration(message) {
 
 async function moderateMessage(message, data) {
   if (memberBypassesModeration(message)) return false;
-  if (containsSevereLanguage(message.content)) return punishAndLog(message, data, 'Prohibited slur or severe abusive language');
+  if (containsSevereLanguage(message.content, data, message.guild.id)) return punishAndLog(message, data, 'Prohibited slur or severe abusive language');
   const attachmentReason = dangerousAttachmentReason(message);
   if (attachmentReason) return punishAndLog(message, data, attachmentReason);
   const violation = getMessageRuleViolation(message);
@@ -1898,6 +1950,18 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.respond(results);
       return;
+    }
+
+    if (interaction.commandName === 'blacklist') {
+      const subcommand = interaction.options.getSubcommand();
+      if (subcommand === 'remove') {
+        const results = getGuildBlacklist(data, interaction.guildId)
+          .filter(word => word.toLowerCase().includes(searchText))
+          .slice(0, 25)
+          .map(word => ({ name: word.slice(0, 100), value: word }));
+        await interaction.respond(results);
+        return;
+      }
     }
 
     if (interaction.commandName === 'removereply') {
@@ -2055,6 +2119,55 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.commandName === 'bing') {
       await interaction.reply('bong');
+      return;
+    }
+
+    if (interaction.commandName === 'blacklist') {
+      const data = loadData();
+      const words = getGuildBlacklist(data, interaction.guildId);
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === 'add') {
+        const rawWord = interaction.options.getString('word', true).trim();
+        const normalised = normaliseModerationText(rawWord).trim();
+        if (!normalised) {
+          await interaction.reply({ content: 'That word is not valid.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const exists = words.some(word => normaliseModerationText(word) === normalised);
+        if (exists) {
+          await interaction.reply({ content: `\`${rawWord}\` is already blacklisted.`, flags: MessageFlags.Ephemeral });
+          return;
+        }
+        words.push(rawWord);
+        words.sort((a, b) => a.localeCompare(b));
+        saveData(data);
+        await interaction.reply({ content: `✅ Added \`${rawWord}\` to the blacklist. Messages containing it will be deleted and warned.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (sub === 'remove') {
+        const rawWord = interaction.options.getString('word', true);
+        const index = words.findIndex(word => word.toLowerCase() === rawWord.toLowerCase());
+        if (index < 0) {
+          await interaction.reply({ content: `\`${rawWord}\` is not blacklisted.`, flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const [removed] = words.splice(index, 1);
+        saveData(data);
+        await interaction.reply({ content: `✅ Removed \`${removed}\` from the blacklist.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const shown = words.length
+        ? words.map((word, index) => `\`${index + 1}.\` ${word}`).join('\n').slice(0, 3900)
+        : '*No custom blacklisted words yet.*';
+      const embed = new EmbedBuilder()
+        .setColor(0xf08a24)
+        .setTitle('Server Word Blacklist')
+        .setDescription(shown)
+        .setFooter({ text: `${words.length} custom blocked word${words.length === 1 ? '' : 's'}` });
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       return;
     }
 

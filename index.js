@@ -49,6 +49,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -1480,6 +1481,7 @@ async function registerCommands() {
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log('AUTOMOD enabled: severe language, spam, links, attachments and NSFW checks are active.');
   console.log(`Connected to ${client.guilds.cache.size} server(s).`);
 });
 
@@ -1493,8 +1495,8 @@ const recentGuildJoins = new Map();
 
 const moderationSettings = {
   noticeDeleteMs: 12_000,
-  rapidWindowMs: 7_000,
-  rapidLimit: 7,
+  rapidWindowMs: 6_000,
+  rapidLimit: 5,
   duplicateWindowMs: 15_000,
   duplicateLimit: 3,
   mentionLimit: 6,
@@ -1505,8 +1507,8 @@ const moderationSettings = {
 };
 
 // Ordinary swearing is intentionally allowed. These patterns are for serious
-// slurs, hateful language and degrading sexual harassment. "men" is NOT
-// blocked because it is a normal word. Add server-specific entries to
+// slurs, hateful language and degrading sexual harassment. Server-specific
+// entries can also be added to
 // moderation-extra-words.json as plain strings (one JSON array).
 const severeWordPatterns = [
   /\bn+[i1!|l]+g+[e3a@]+r+s?\b/i,
@@ -1532,6 +1534,7 @@ const severeWordPatterns = [
   /\bwh+[o0]+r+[e3]+s?\b/i,
   /\bh+[o0]+e+s?\b/i,
   /\bh+[o0]+s?\b/i,
+  /\bm+[e3]+n+\b/i,
   /\bsl+[u*]+t+s?\b/i,
   /\bth+[o0]+t+s?\b/i,
   /\bc+[u*]+nt+s?\b/i,
@@ -1762,7 +1765,11 @@ async function punishAndLog(message, data, reason, messages = [message]) {
   if (moderationLocks.has(lockKey)) return true;
   moderationLocks.add(lockKey);
   try {
-    await deleteMessagesSafely(messages);
+    const deletableMessages = messages.filter(msg => msg?.deletable !== false);
+    if (deletableMessages.length === 0) {
+      console.error('AUTOMOD: Cannot delete messages. Give the bot Manage Messages and place its role correctly.');
+    }
+    await deleteMessagesSafely(deletableMessages);
     moderationActivity.delete(lockKey);
     const count = addModerationWarning(data, message, reason);
     const action = await applyWarningEscalation(message, count, reason);
@@ -1778,8 +1785,16 @@ async function punishAndLog(message, data, reason, messages = [message]) {
   return true;
 }
 
+function memberBypassesModeration(message) {
+  const ids = String(process.env.MODERATION_BYPASS_ROLE_IDS || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  return ids.length > 0 && message.member?.roles.cache.some(role => ids.includes(role.id));
+}
+
 async function moderateMessage(message, data) {
-  if (message.member?.permissions.has(PermissionFlagsBits.Administrator)) return false;
+  if (memberBypassesModeration(message)) return false;
   if (containsSevereLanguage(message.content)) return punishAndLog(message, data, 'Prohibited slur or severe abusive language');
   const attachmentReason = dangerousAttachmentReason(message);
   if (attachmentReason) return punishAndLog(message, data, attachmentReason);

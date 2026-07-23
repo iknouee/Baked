@@ -2050,9 +2050,7 @@ server.listen(port, '0.0.0.0', () => {
 
 createDataFile();
 
-registerCommands()
-  .then(() => client.login(token))
-  .catch((error) => {
-    console.error('Bot startup failed:', error);
-    process.exit(1);
-  });
+client.login(token).catch((error) => {
+  console.error('Bot login failed:', error);
+  process.exit(1);
+});

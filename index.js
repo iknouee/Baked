@@ -14,6 +14,8 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } = require('discord.js');
 
 const {
@@ -34,6 +36,20 @@ const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
 const welcomeChannelId = process.env.WELCOME_CHANNEL_ID;
 const goodbyeChannelId = process.env.GOODBYE_CHANNEL_ID;
+const rolesChannelId = process.env.ROLES_CHANNEL_ID;
+
+const selfRoleIds = {
+  red: process.env.ROLE_RED_ID,
+  orange: process.env.ROLE_ORANGE_ID,
+  yellow: process.env.ROLE_YELLOW_ID,
+  green: process.env.ROLE_GREEN_ID,
+  blue: process.env.ROLE_BLUE_ID,
+  purple: process.env.ROLE_PURPLE_ID,
+  pink: process.env.ROLE_PINK_ID,
+  under18: process.env.ROLE_UNDER_18_ID,
+  over18: process.env.ROLE_18_PLUS_ID,
+};
+
 const port = Number(process.env.PORT || 10000);
 
 const BAKED_BANNER_URL =
@@ -944,6 +960,96 @@ async function endSmashOrPassPoll(pollId) {
 }
 
 // ======================================================
+// SELF ROLE HELPERS
+// ======================================================
+
+const COLOR_ROLE_KEYS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink'];
+const AGE_ROLE_KEYS = ['under18', 'over18'];
+
+function configuredRoleIds(keys) {
+  return keys.map((key) => selfRoleIds[key]).filter(Boolean);
+}
+
+function createSelfRolesEmbed(guild) {
+  const guildIcon = guild.iconURL({ extension: 'png', size: 256 });
+
+  return new EmbedBuilder()
+    .setColor(0xf08a24)
+    .setAuthor({
+      name: 'BKD • SELF ROLES',
+      iconURL: guildIcon || undefined,
+    })
+    .setTitle('Choose Your Roles')
+    .setDescription([
+      'Customise your profile using the menus below.',
+      '',
+      '🎨 **Colour role**',
+      'Choose one colour for your name. Picking another colour automatically replaces your old one.',
+      '',
+      '🎂 **Age role**',
+      'Choose either **Under 18** or **18+**. Please select honestly.',
+      '',
+      'You can change your choices whenever you want.',
+    ].join('\
+'))
+    .setThumbnail(guildIcon || null)
+    .setFooter({ text: 'BKD • Choose one option from each menu' });
+}
+
+function createSelfRoleMenus(disabled = false) {
+  const colourMenu = new StringSelectMenuBuilder()
+    .setCustomId('selfroles:colour')
+    .setPlaceholder('🎨 Choose your colour')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(disabled)
+    .addOptions(
+      new StringSelectMenuOptionBuilder().setLabel('Red').setValue('red').setEmoji('🔴'),
+      new StringSelectMenuOptionBuilder().setLabel('Orange').setValue('orange').setEmoji('🟠'),
+      new StringSelectMenuOptionBuilder().setLabel('Yellow').setValue('yellow').setEmoji('🟡'),
+      new StringSelectMenuOptionBuilder().setLabel('Green').setValue('green').setEmoji('🟢'),
+      new StringSelectMenuOptionBuilder().setLabel('Blue').setValue('blue').setEmoji('🔵'),
+      new StringSelectMenuOptionBuilder().setLabel('Purple').setValue('purple').setEmoji('🟣'),
+      new StringSelectMenuOptionBuilder().setLabel('Pink').setValue('pink').setEmoji('🩷')
+    );
+
+  const ageMenu = new StringSelectMenuBuilder()
+    .setCustomId('selfroles:age')
+    .setPlaceholder('🎂 Choose your age group')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(disabled)
+    .addOptions(
+      new StringSelectMenuOptionBuilder().setLabel('Under 18').setValue('under18').setEmoji('🧸'),
+      new StringSelectMenuOptionBuilder().setLabel('18+').setValue('over18').setEmoji('🔞')
+    );
+
+  return [
+    new ActionRowBuilder().addComponents(colourMenu),
+    new ActionRowBuilder().addComponents(ageMenu),
+  ];
+}
+
+async function replaceExclusiveRole(member, selectedKey, groupKeys) {
+  const selectedRoleId = selfRoleIds[selectedKey];
+  if (!selectedRoleId) {
+    throw new Error(`The environment variable for ${selectedKey} is not configured.`);
+  }
+
+  const rolesToRemove = configuredRoleIds(groupKeys).filter(
+    (roleId) => roleId !== selectedRoleId && member.roles.cache.has(roleId)
+  );
+
+  if (rolesToRemove.length > 0) {
+    await member.roles.remove(rolesToRemove, 'Self-role selection changed');
+  }
+
+  if (!member.roles.cache.has(selectedRoleId)) {
+    await member.roles.add(selectedRoleId, 'Self-role selection');
+  }
+}
+
+// ======================================================
 // APPLICATION COMMANDS
 // ======================================================
 
@@ -1055,6 +1161,12 @@ const commands = [
         .setMaxValue(300)
         .setRequired(false)
     )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('setuproles')
+    .setDescription('Posts the BKD colour and age self-role panel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false),
 
   new ContextMenuCommandBuilder()
@@ -1243,6 +1355,7 @@ client.once('ready', () => {
   console.log(`Connected to ${client.guilds.cache.size} server(s).`);
   console.log(`Welcome channel: ${welcomeChannelId || 'not configured'}`);
   console.log(`Goodbye channel: ${goodbyeChannelId || 'not configured'}`);
+  console.log(`Roles channel: ${rolesChannelId || 'not configured'}`);
 });
 
 // ======================================================
@@ -1406,6 +1519,58 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ======================================================
+// SELF ROLE SELECT MENU HANDLER
+// ======================================================
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (!interaction.customId.startsWith('selfroles:')) return;
+
+  try {
+    const member = interaction.member;
+    const selectedKey = interaction.values[0];
+
+    if (!member || !interaction.guild) {
+      await interaction.reply({
+        content: 'Self roles can only be used inside the server.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (interaction.customId === 'selfroles:colour') {
+      if (!COLOR_ROLE_KEYS.includes(selectedKey)) return;
+      await replaceExclusiveRole(member, selectedKey, COLOR_ROLE_KEYS);
+      await interaction.reply({
+        content: `Your colour role has been updated to <@&${selfRoleIds[selectedKey]}>.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (interaction.customId === 'selfroles:age') {
+      if (!AGE_ROLE_KEYS.includes(selectedKey)) return;
+      await replaceExclusiveRole(member, selectedKey, AGE_ROLE_KEYS);
+      await interaction.reply({
+        content: `Your age role has been updated to <@&${selfRoleIds[selectedKey]}>.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+  } catch (error) {
+    console.error('Self-role update failed:', error);
+    const message = error.code === 50013
+      ? 'I cannot manage that role. Move the bot role above all colour and age roles, then give it **Manage Roles**.'
+      : `I could not update your role. ${error.message || 'Check the Render logs.'}`;
+
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
+    } else {
+      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+  }
+});
+
+// ======================================================
 // SLASH COMMAND HANDLER
 // ======================================================
 
@@ -1435,6 +1600,55 @@ client.on('interactionCreate', async (interaction) => {
 
 
 
+
+    if (interaction.commandName === 'setuproles') {
+      const channel = rolesChannelId
+        ? await interaction.guild.channels.fetch(rolesChannelId).catch(() => null)
+        : interaction.channel;
+
+      if (!channel?.isTextBased()) {
+        await interaction.reply({
+          content: 'Set a valid `ROLES_CHANNEL_ID` in Render, or run this command inside a text channel.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const missing = Object.entries(selfRoleIds)
+        .filter(([, roleId]) => !roleId)
+        .map(([key]) => key);
+
+      if (missing.length > 0) {
+        await interaction.reply({
+          content: `These role IDs are missing in Render: **${missing.join(', ')}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const missingRoles = Object.entries(selfRoleIds)
+        .filter(([, roleId]) => !interaction.guild.roles.cache.has(roleId))
+        .map(([key]) => key);
+
+      if (missingRoles.length > 0) {
+        await interaction.reply({
+          content: `I could not find these configured roles in this server: **${missingRoles.join(', ')}**. Check their IDs.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await channel.send({
+        embeds: [createSelfRolesEmbed(interaction.guild)],
+        components: createSelfRoleMenus(),
+      });
+
+      await interaction.reply({
+        content: `The self-role panel was posted in ${channel}.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
     if (interaction.commandName === 'feet') {
       await interaction.deferReply();

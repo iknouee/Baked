@@ -32,7 +32,6 @@ const http = require('http');
 // ======================================================
 
 const token = process.env.DISCORD_TOKEN;
-const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
 const welcomeChannelId = process.env.WELCOME_CHANNEL_ID;
 const goodbyeChannelId = process.env.GOODBYE_CHANNEL_ID;
@@ -55,8 +54,8 @@ const port = Number(process.env.PORT || 10000);
 const BAKED_BANNER_URL =
   'https://cdn.discordapp.com/attachments/1316124692188500010/1529655493595758823/baked.png?ex=6a62ba31&is=6a6168b1&hm=6e64c7f2b3205df1d11b3ec7999089b6ee5eda0712ce6ec9aaeb5387b664a934';
 
-if (!token || !clientId) {
-  console.error('Missing DISCORD_TOKEN or CLIENT_ID environment variable.');
+if (!token) {
+  console.error('Missing DISCORD_TOKEN environment variable.');
   process.exit(1);
 }
 
@@ -1180,44 +1179,56 @@ const commands = [
 // ======================================================
 
 async function registerCommands() {
-  const rest = new REST({
-    version: '10',
-  }).setToken(token);
+  if (!client.application?.id) {
+    throw new Error('The bot application ID is unavailable because the bot is not logged in yet.');
+  }
 
-  console.log('Registering application commands...');
+  const applicationId = client.application.id;
+  const rest = new REST({ version: '10' }).setToken(token);
+
+  // Defensively remove accidental duplicate definitions before deployment.
+  const uniqueCommands = [];
+  const seenCommandKeys = new Set();
+
+  for (const command of commands) {
+    const key = `${command.type || 1}:${command.name}`;
+    if (seenCommandKeys.has(key)) {
+      console.warn(`Skipped duplicate command definition: ${command.name}`);
+      continue;
+    }
+    seenCommandKeys.add(key);
+    uniqueCommands.push(command);
+  }
+
+  console.log(`Registering commands for application ${applicationId}...`);
 
   if (guildId) {
-    // Remove stale global commands so Discord does not show every command twice.
-    await rest.put(Routes.applicationCommands(clientId), { body: [] });
-    console.log('Cleared old global application commands.');
+    const guild = client.guilds.cache.get(guildId);
 
-    // Defensively remove accidental duplicate command definitions before deployment.
-    const uniqueCommands = [];
-    const seenCommandKeys = new Set();
-    for (const command of commands) {
-      const key = `${command.type || 1}:${command.name}`;
-      if (seenCommandKeys.has(key)) {
-        console.warn(`Skipped duplicate command definition: ${command.name}`);
-        continue;
-      }
-      seenCommandKeys.add(key);
-      uniqueCommands.push(command);
+    if (!guild) {
+      const visibleGuilds = client.guilds.cache
+        .map((item) => `${item.name} (${item.id})`)
+        .join(', ') || 'none';
+
+      throw new Error(
+        `The logged-in bot cannot see GUILD_ID ${guildId}. Visible guilds: ${visibleGuilds}`
+      );
     }
 
+    // Clear stale global commands, then register instant guild commands.
+    await rest.put(Routes.applicationCommands(applicationId), { body: [] });
+    console.log('Cleared old global application commands.');
+
     await rest.put(
-      Routes.applicationGuildCommands(clientId, guildId),
-      {
-        body: uniqueCommands,
-      }
+      Routes.applicationGuildCommands(applicationId, guildId),
+      { body: uniqueCommands }
     );
 
-    console.log(`Commands registered in server ${guildId}.`);
+    console.log(`Commands registered in ${guild.name} (${guildId}).`);
   } else {
     await rest.put(
-      Routes.applicationCommands(clientId),
-      {
-        body: commands,
-      }
+      Routes.applicationCommands(applicationId),
+      { body: uniqueCommands }
     );
 
     console.log('Global application commands registered.');
@@ -1349,13 +1360,20 @@ client.on('guildMemberRemove', async (member) => {
 // READY EVENT
 // ======================================================
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Actual application ID: ${client.application.id}`);
   console.log('Security and automatic chat responses are disabled. Links are allowed.');
   console.log(`Connected to ${client.guilds.cache.size} server(s).`);
   console.log(`Welcome channel: ${welcomeChannelId || 'not configured'}`);
   console.log(`Goodbye channel: ${goodbyeChannelId || 'not configured'}`);
   console.log(`Roles channel: ${rolesChannelId || 'not configured'}`);
+
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error('Command registration failed:', error);
+  }
 });
 
 // ======================================================

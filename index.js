@@ -45,6 +45,7 @@ const selfRoleIds = {
   blue: process.env.ROLE_BLUE_ID,
   purple: process.env.ROLE_PURPLE_ID,
   pink: process.env.ROLE_PINK_ID,
+  babyPink: process.env.ROLE_BABY_PINK_ID,
   under18: process.env.ROLE_UNDER_18_ID,
   over18: process.env.ROLE_18_PLUS_ID,
 };
@@ -962,7 +963,7 @@ async function endSmashOrPassPoll(pollId) {
 // SELF ROLE HELPERS
 // ======================================================
 
-const COLOR_ROLE_KEYS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink'];
+const COLOR_ROLE_KEYS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'babyPink'];
 const AGE_ROLE_KEYS = ['under18', 'over18'];
 
 function configuredRoleIds(keys) {
@@ -973,26 +974,27 @@ function createSelfRolesEmbed(guild) {
   const guildIcon = guild.iconURL({ extension: 'png', size: 256 });
 
   return new EmbedBuilder()
-    .setColor(0xf08a24)
+    .setColor(0xf2a6c2)
     .setAuthor({
       name: 'BKD • SELF ROLES',
       iconURL: guildIcon || undefined,
     })
     .setTitle('Choose Your Roles')
     .setDescription([
-      'Customise your profile using the menus below.',
+      'Use the menus below to customise your profile.',
       '',
-      '🎨 **Colour role**',
-      'Choose one colour for your name. Picking another colour automatically replaces your old one.',
+      '🎨 **COLOUR ROLE**',
+      'Choose one colour for your name.',
+      'Selecting a new colour replaces your previous one.',
       '',
-      '🎂 **Age role**',
-      'Choose either **Under 18** or **18+**. Please select honestly.',
+      '🎂 **AGE ROLE**',
+      'Choose either **Under 18** or **18+**.',
+      'Please select honestly.',
       '',
-      'You can change your choices whenever you want.',
-    ].join('\
-'))
+      'You can change your choices at any time.',
+    ].join('\n'))
     .setThumbnail(guildIcon || null)
-    .setFooter({ text: 'BKD • Choose one option from each menu' });
+    .setFooter({ text: 'BKD • Select one option from each menu' });
 }
 
 function createSelfRoleMenus(disabled = false) {
@@ -1009,7 +1011,8 @@ function createSelfRoleMenus(disabled = false) {
       new StringSelectMenuOptionBuilder().setLabel('Green').setValue('green').setEmoji('🟢'),
       new StringSelectMenuOptionBuilder().setLabel('Blue').setValue('blue').setEmoji('🔵'),
       new StringSelectMenuOptionBuilder().setLabel('Purple').setValue('purple').setEmoji('🟣'),
-      new StringSelectMenuOptionBuilder().setLabel('Pink').setValue('pink').setEmoji('🩷')
+      new StringSelectMenuOptionBuilder().setLabel('Pink').setValue('pink').setEmoji('🩷'),
+      new StringSelectMenuOptionBuilder().setLabel('Baby Pink').setValue('babyPink').setEmoji('🌸')
     );
 
   const ageMenu = new StringSelectMenuBuilder()

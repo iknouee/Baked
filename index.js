@@ -32,7 +32,12 @@ const http = require('http');
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
+const welcomeChannelId = process.env.WELCOME_CHANNEL_ID;
+const goodbyeChannelId = process.env.GOODBYE_CHANNEL_ID;
 const port = Number(process.env.PORT || 10000);
+
+const BAKED_BANNER_URL =
+  'https://cdn.discordapp.com/attachments/1316124692188500010/1529655493595758823/baked.png?ex=6a62ba31&is=6a6168b1&hm=6e64c7f2b3205df1d11b3ec7999089b6ee5eda0712ce6ec9aaeb5387b664a934';
 
 if (!token || !clientId) {
   console.error('Missing DISCORD_TOKEN or CLIENT_ID environment variable.');
@@ -1108,6 +1113,127 @@ async function registerCommands() {
 }
 
 // ======================================================
+// WELCOME / GOODBYE EMBEDS
+// ======================================================
+
+function createWelcomeEmbed(member) {
+  const guildIcon = member.guild.iconURL({
+    extension: 'png',
+    size: 512,
+  });
+
+  return new EmbedBuilder()
+    .setColor(0xf08a24)
+    .setAuthor({
+      name: 'BKD • NEW MEMBER',
+      iconURL: guildIcon || undefined,
+    })
+    .setTitle(`Welcome to BKD, ${member.user.username}!`)
+    .setDescription([
+      `Welcome ${member} — you are officially part of **BKD**.`,
+      '',
+      'Make yourself at home, meet everyone, and enjoy the server. 🧡',
+    ].join('\n'))
+    .addFields(
+      {
+        name: '👥 Member',
+        value: `You are member **#${member.guild.memberCount.toLocaleString('en-GB')}**`,
+        inline: true,
+      },
+      {
+        name: '📅 Account created',
+        value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`,
+        inline: true,
+      }
+    )
+    .setThumbnail(
+      member.user.displayAvatarURL({
+        extension: 'png',
+        size: 512,
+      })
+    )
+    .setImage(BAKED_BANNER_URL)
+    .setFooter({
+      text: `${member.guild.name} • Built different. Baked together.`,
+      iconURL: guildIcon || undefined,
+    })
+    .setTimestamp();
+}
+
+function createGoodbyeEmbed(member) {
+  const guildIcon = member.guild.iconURL({
+    extension: 'png',
+    size: 512,
+  });
+
+  return new EmbedBuilder()
+    .setColor(0x7a1f1f)
+    .setAuthor({
+      name: 'BKD • MEMBER LEFT',
+      iconURL: guildIcon || undefined,
+    })
+    .setTitle(`${member.user.username} left BKD`)
+    .setDescription([
+      `**${member.user.username}** has left the server.`,
+      '',
+      'Thanks for being part of **BKD** — we hope to see you again. 🖤',
+    ].join('\n'))
+    .addFields({
+      name: '👥 Members remaining',
+      value: `**${member.guild.memberCount.toLocaleString('en-GB')}**`,
+      inline: true,
+    })
+    .setThumbnail(
+      member.user.displayAvatarURL({
+        extension: 'png',
+        size: 512,
+      })
+    )
+    .setImage(BAKED_BANNER_URL)
+    .setFooter({
+      text: `${member.guild.name} • Once BKD, always remembered.`,
+      iconURL: guildIcon || undefined,
+    })
+    .setTimestamp();
+}
+
+async function sendMemberEventEmbed(channelId, embed, eventName) {
+  if (!channelId) {
+    console.log(`${eventName} channel is not configured.`);
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+
+    if (!channel?.isTextBased()) {
+      console.error(`${eventName} channel ${channelId} is not a text channel.`);
+      return;
+    }
+
+    await channel.send({ embeds: [embed] });
+  } catch (error) {
+    console.error(`Failed to send ${eventName.toLowerCase()} message:`, error);
+  }
+}
+
+client.on('guildMemberAdd', async (member) => {
+  await sendMemberEventEmbed(
+    welcomeChannelId,
+    createWelcomeEmbed(member),
+    'Welcome'
+  );
+});
+
+client.on('guildMemberRemove', async (member) => {
+  await sendMemberEventEmbed(
+    goodbyeChannelId,
+    createGoodbyeEmbed(member),
+    'Goodbye'
+  );
+});
+
+// ======================================================
 // READY EVENT
 // ======================================================
 
@@ -1115,6 +1241,8 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log('Security and automatic chat responses are disabled. Links are allowed.');
   console.log(`Connected to ${client.guilds.cache.size} server(s).`);
+  console.log(`Welcome channel: ${welcomeChannelId || 'not configured'}`);
+  console.log(`Goodbye channel: ${goodbyeChannelId || 'not configured'}`);
 });
 
 // ======================================================

@@ -1203,16 +1203,25 @@ async function registerCommands() {
   console.log(`Registering commands for application ${applicationId}...`);
 
   if (guildId) {
-    const guild = client.guilds.cache.get(guildId);
+    let guild = client.guilds.cache.get(guildId);
 
+    // The READY event can fire before every guild is available in cache.
+    // Try a direct API fetch before treating the guild as inaccessible.
     if (!guild) {
-      const visibleGuilds = client.guilds.cache
-        .map((item) => `${item.name} (${item.id})`)
-        .join(', ') || 'none';
+      console.log(`Guild ${guildId} is not cached yet; attempting a direct fetch...`);
 
-      throw new Error(
-        `The logged-in bot cannot see GUILD_ID ${guildId}. Visible guilds: ${visibleGuilds}`
-      );
+      try {
+        guild = await client.guilds.fetch(guildId);
+      } catch (fetchError) {
+        const visibleGuilds = client.guilds.cache
+          .map((item) => `${item.name} (${item.id})`)
+          .join(', ') || 'none';
+
+        throw new Error(
+          `Unable to access GUILD_ID ${guildId}. Visible guilds: ${visibleGuilds}. ` +
+          `Discord fetch error: ${fetchError.message}`
+        );
+      }
     }
 
     // Clear stale global commands, then register instant guild commands.
@@ -1360,11 +1369,17 @@ client.on('guildMemberRemove', async (member) => {
 // READY EVENT
 // ======================================================
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Actual application ID: ${client.application.id}`);
   console.log('Security and automatic chat responses are disabled. Links are allowed.');
+  // Give Discord a moment to finish populating guild state on startup.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
   console.log(`Connected to ${client.guilds.cache.size} server(s).`);
+  for (const guild of client.guilds.cache.values()) {
+    console.log(`Visible guild: ${guild.name} (${guild.id})`);
+  }
   console.log(`Welcome channel: ${welcomeChannelId || 'not configured'}`);
   console.log(`Goodbye channel: ${goodbyeChannelId || 'not configured'}`);
   console.log(`Roles channel: ${rolesChannelId || 'not configured'}`);
